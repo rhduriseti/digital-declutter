@@ -1,4 +1,3 @@
-from datetime import datetime
 from pathlib import Path
 
 from declutter_bot.connectors.base import SourceConnector
@@ -141,36 +140,11 @@ class GoogleDriveConnector(SourceConnector):
 
     def _to_file_metadata(self, drive_file: dict) -> FileMetadata | None:
         """Convert a Drive API file dict to a FileMetadata object."""
-        name = drive_file.get("name", "")
-        mime = drive_file.get("mimeType", "")
-        file_id = drive_file["id"]
-
-        # Determine extension
-        if mime in GOOGLE_MIME_EXPORT:
-            ext = GOOGLE_MIME_EXPORT[mime]
-        else:
-            ext = Path(name).suffix.lower()
-
-        # Skip files not in our whitelist
-        if ext not in DRIVE_EXT_WHITELIST:
-            return None
-
-        size = int(drive_file.get("size", 0))
-        modified = datetime.fromisoformat(
-            drive_file.get("modifiedTime", "1970-01-01T00:00:00Z").replace("Z", "+00:00")
-        )
-        md5 = drive_file.get("md5Checksum")
-
-        return FileMetadata(
-            path=Path(f"gdrive:{self.account_name}//{file_id}"),
-            name=name,
-            extension=ext,
-            size_bytes=size,
-            created_at=modified,   # Drive doesn't expose createdTime by default
-            modified_at=modified,
-            source=self.source_id,
-            category=None,
-            duplicate_of=None,
+        return FileMetadata.from_drive(
+            drive_file,
+            account_name=self.account_name,
+            ext_whitelist=DRIVE_EXT_WHITELIST,
+            google_mime_export=GOOGLE_MIME_EXPORT,
         )
 
     # ------------------------------------------------------------------

@@ -43,16 +43,22 @@ def detect_duplicates(index: dict) -> dict:
         for path, entry in index.items()
     }
 
-    # Step 2: Compute MD5 for each file
+    # Step 2: Resolve MD5 for each file
+    # - Drive files: md5 is stored in the index (fetched free from the API)
+    # - Local files: compute md5 by reading from disk
     md5_map = {}  # md5 → list of file paths
 
-    for path in updated_index:
-        file_path = Path(path)
+    for path, entry in updated_index.items():
+        stored_md5 = entry.get("md5")
 
-        if not file_path.exists():
-            continue
+        if stored_md5:
+            md5 = stored_md5
+        else:
+            file_path = Path(path)
+            if not file_path.exists():
+                continue
+            md5 = compute_md5(path)
 
-        md5 = compute_md5(path)
         md5_map.setdefault(md5, []).append(path)
 
     # Step 3: Mark duplicates
