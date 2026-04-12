@@ -1,0 +1,4 @@
+requests
+pytest
+rich
+send2trash

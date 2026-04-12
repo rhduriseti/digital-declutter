@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "../.."
+		},
+		{
+			"path": "../../../../.declutter"
+		},
+		{
+			"path": "../../../../.declutter_staging"
+		}
+	],
+	"settings": {}
+}

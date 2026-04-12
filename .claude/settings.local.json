@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Users/radhika/Documents/digital_declutter/venv/bin/python -m pip install send2trash --target /Users/radhika/Documents/digital_declutter/venv/lib/python3.11/site-packages/)",
+      "Bash(/Users/radhika/Documents/digital_declutter/venv/bin/python -m declutter_bot.cli.main delete-duplicates --help)",
+      "Bash(venv/bin/python -m declutter_bot.cli.main --help)"
+    ]
+  }
+}
