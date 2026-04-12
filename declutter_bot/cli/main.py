@@ -10,6 +10,7 @@ from rich import box
 
 from declutter_bot.tools.scan_folder import scan_folder
 from declutter_bot.core.index_manager import update_index_with_scan, load_index, save_index
+from declutter_bot.connectors.gdrive import GoogleDriveConnector
 from declutter_bot.tools.categorize_files import categorize_files
 from declutter_bot.tools.detect_duplicates import detect_duplicates
 from declutter_bot.tools.generate_report import generate_report, generate_report_for_scan
@@ -200,6 +201,34 @@ def run_pipeline(folder, args):
 
 
 # ------------------------------------------------------------
+# Drive pipeline
+# ------------------------------------------------------------
+
+def run_drive_pipeline(account_name: str, args):
+    """Scan a Google Drive account and update the index."""
+    connector = GoogleDriveConnector(account_name)
+
+    try:
+        console.print(f"Scanning Google Drive ({account_name})...")
+        scanned = connector.scan()
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        return None
+
+    console.print(f"Found [bold]{len(scanned)}[/bold] files. Updating index...")
+
+    update_index_with_scan(scanned)
+    index = load_index()
+    index = categorize_files(index)
+    index = detect_duplicates(index)
+    save_index(index)
+
+    report = generate_report(index)
+    console.print(f"✨ [bold green]Drive scan complete![/bold green]")
+    return report
+
+
+# ------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------
 def main():
@@ -207,8 +236,9 @@ def main():
     sub = parser.add_subparsers(dest="command")
 
     # scan
-    scan_cmd = sub.add_parser("scan", help="Scan a folder and update index")
-    scan_cmd.add_argument("folder")
+    scan_cmd = sub.add_parser("scan", help="Scan a folder or Drive account and update index")
+    scan_cmd.add_argument("folder", nargs="?", help="Local folder to scan (omit when using --source gdrive:*)")
+    scan_cmd.add_argument("--source", default="local", help="Source to scan: 'local' (default) or 'gdrive:<account>'")
     scan_cmd.add_argument("--json", action="store_true")
     scan_cmd.add_argument("--pretty", action="store_true")
     scan_cmd.add_argument("--verbose", action="store_true")
@@ -222,6 +252,7 @@ def main():
 
     # report
     report_cmd = sub.add_parser("report", help="Show summary report")
+    report_cmd.add_argument("--source", default=None, help="Filter by source: 'local', 'gdrive:<account>', or omit for all")
     report_cmd.add_argument("--json", action="store_true")
     report_cmd.add_argument("--pretty", action="store_true")
     report_cmd.add_argument("--verbose", action="store_true")
@@ -244,6 +275,18 @@ def main():
     st_restore.add_argument("--all", action="store_true", help="Restore all staged files")
     st_sub.add_parser("empty", help="Permanently delete all staged files and free disk space")
 
+    # drive-login
+    drive_login_cmd = sub.add_parser("drive-login", help="Connect a Google Drive account")
+    drive_login_cmd.add_argument("account_name", help="Nickname for this account, e.g. 'school' or 'personal'")
+    drive_login_cmd.add_argument("--credentials", required=True, help="Path to credentials.json from Google Cloud Console")
+
+    # drive-logout
+    drive_logout_cmd = sub.add_parser("drive-logout", help="Disconnect a Google Drive account")
+    drive_logout_cmd.add_argument("account_name", help="Account nickname to disconnect")
+
+    # drive-accounts
+    sub.add_parser("drive-accounts", help="List all connected Google Drive accounts")
+
     # delete-duplicates
     delete_cmd = sub.add_parser("delete-duplicates", help="Delete duplicate files")
     delete_cmd.add_argument("--dry-run", action="store_true", help="Preview what would be deleted without making changes")
@@ -258,7 +301,18 @@ def main():
     # scan
     # -------------------------
     if args.command == "scan":
-        report = run_pipeline(args.folder, args)
+        if args.source.startswith("gdrive:"):
+            account_name = args.source.split(":", 1)[1]
+            report = run_drive_pipeline(account_name, args)
+            label = args.source
+        else:
+            if not args.folder:
+                console.print("[red]Error: folder is required for local scan.[/red]")
+                console.print("Usage: declutter scan <folder>")
+                console.print("       declutter scan --source gdrive:<account>")
+                return
+            report = run_pipeline(args.folder, args)
+            label = args.folder
 
         if report is None:
             return
@@ -268,7 +322,7 @@ def main():
             return
 
         if args.pretty:
-            render_scan_report(report, args.folder)
+            render_scan_report(report, label)
         else:
             print_plain_scan_summary(report)
         return
@@ -295,6 +349,8 @@ def main():
     # -------------------------
     if args.command == "report":
         index = load_index()
+        if args.source:
+            index = {k: v for k, v in index.items() if v.get("source") == args.source}
         report = generate_report(index)
 
         if args.json:
@@ -476,6 +532,44 @@ def main():
             console.print(f"[yellow]Skipped {len(skipped)} file(s):[/yellow]")
             for s in skipped:
                 console.print(f"  - {s}")
+        return
+
+    # -------------------------
+    # drive-login
+    # -------------------------
+    if args.command == "drive-login":
+        try:
+            GoogleDriveConnector.login(args.account_name, args.credentials)
+            console.print(f"[green]Connected Google Drive account:[/green] {args.account_name}")
+            console.print(f"Run [bold]declutter scan --source gdrive:{args.account_name}[/bold] to scan it.")
+        except Exception as e:
+            console.print(f"[red]Login failed:[/red] {e}")
+        return
+
+    # -------------------------
+    # drive-logout
+    # -------------------------
+    if args.command == "drive-logout":
+        connector = GoogleDriveConnector(args.account_name)
+        if connector.token_path.exists():
+            connector.logout()
+            console.print(f"[green]Disconnected:[/green] {args.account_name}")
+        else:
+            console.print(f"[yellow]No account found with name:[/yellow] {args.account_name}")
+        return
+
+    # -------------------------
+    # drive-accounts
+    # -------------------------
+    if args.command == "drive-accounts":
+        accounts = GoogleDriveConnector.list_accounts()
+        if not accounts:
+            console.print("[yellow]No Google Drive accounts connected.[/yellow]")
+            console.print("To connect one: [bold]declutter drive-login <name> --credentials <path>[/bold]")
+        else:
+            console.print(f"\n[bold]Connected Drive accounts ({len(accounts)}):[/bold]")
+            for name in sorted(accounts):
+                console.print(f"  [cyan]{name}[/cyan]  →  declutter scan --source gdrive:{name}")
         return
 
     parser.print_help()
