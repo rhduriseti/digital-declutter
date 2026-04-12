@@ -10,6 +10,7 @@ class FileMetadata:
     size_bytes: int
     created_at: datetime
     modified_at: datetime
+    source: str = "local"
     category: str | None = None
     duplicate_of: str | None = None
 
@@ -23,4 +24,5 @@ class FileMetadata:
             size_bytes=stat.st_size,
             created_at=datetime.fromtimestamp(stat.st_ctime),
             modified_at=datetime.fromtimestamp(stat.st_mtime),
+            source="local",
         )
