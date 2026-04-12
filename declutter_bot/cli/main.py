@@ -278,7 +278,6 @@ def main():
     # drive-login
     drive_login_cmd = sub.add_parser("drive-login", help="Connect a Google Drive account")
     drive_login_cmd.add_argument("account_name", help="Nickname for this account, e.g. 'school' or 'personal'")
-    drive_login_cmd.add_argument("--credentials", required=True, help="Path to credentials.json from Google Cloud Console")
 
     # drive-logout
     drive_logout_cmd = sub.add_parser("drive-logout", help="Disconnect a Google Drive account")
@@ -539,9 +538,11 @@ def main():
     # -------------------------
     if args.command == "drive-login":
         try:
-            GoogleDriveConnector.login(args.account_name, args.credentials)
+            GoogleDriveConnector.login(args.account_name)
             console.print(f"[green]Connected Google Drive account:[/green] {args.account_name}")
             console.print(f"Run [bold]declutter scan --source gdrive:{args.account_name}[/bold] to scan it.")
+        except FileNotFoundError as e:
+            console.print(f"[red]{e}[/red]")
         except Exception as e:
             console.print(f"[red]Login failed:[/red] {e}")
         return

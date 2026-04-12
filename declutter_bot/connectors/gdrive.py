@@ -2,7 +2,7 @@ from pathlib import Path
 
 from declutter_bot.connectors.base import SourceConnector
 from declutter_bot.core.file_metadata import FileMetadata
-from declutter_bot.core.paths import DRIVE_ACCOUNTS_DIR
+from declutter_bot.core.paths import DRIVE_ACCOUNTS_DIR, GOOGLE_CREDENTIALS_PATH
 
 # Google OAuth scopes needed — drive.file would be too narrow, we need full metadata read
 SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -55,18 +55,23 @@ class GoogleDriveConnector(SourceConnector):
     # ------------------------------------------------------------------
 
     @classmethod
-    def login(cls, account_name: str, credentials_file: str) -> "GoogleDriveConnector":
+    def login(cls, account_name: str) -> "GoogleDriveConnector":
         """
         Run the OAuth2 flow for a new account. Opens the browser for the student to log in.
-        Saves the token to ~/.declutter/drive_accounts/<account_name>.json.
-
-        credentials_file: path to the credentials.json downloaded from Google Cloud Console.
+        Reads app credentials from ~/.declutter/credentials.json (placed there by the developer).
+        Saves the student's token to ~/.declutter/drive_accounts/<account_name>.json.
         """
         from google_auth_oauthlib.flow import InstalledAppFlow
 
+        if not GOOGLE_CREDENTIALS_PATH.exists():
+            raise FileNotFoundError(
+                f"App credentials not found at {GOOGLE_CREDENTIALS_PATH}.\n"
+                "Ask your administrator to place credentials.json in ~/.declutter/."
+            )
+
         DRIVE_ACCOUNTS_DIR.mkdir(parents=True, exist_ok=True)
 
-        flow = InstalledAppFlow.from_client_secrets_file(credentials_file, SCOPES)
+        flow = InstalledAppFlow.from_client_secrets_file(str(GOOGLE_CREDENTIALS_PATH), SCOPES)
         creds = flow.run_local_server(port=0)
 
         connector = cls(account_name)
