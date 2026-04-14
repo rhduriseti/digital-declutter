@@ -28,8 +28,12 @@ def detect_duplicates(index: dict) -> dict:
     """
     Detect exact duplicates using MD5 hashing.
 
-    Recomputes from scratch on every call to avoid stale or cyclic data
-    from previous runs.
+    MD5 computation is incremental — local files are only read from disk when
+    they are new or their modified_at has changed since the MD5 was last computed.
+    Drive files always use the MD5 stored in the index (fetched free from the API).
+
+    Duplicate matching always runs in full across all stored MD5s — cheap since
+    it is just dict lookups, and a newly added file could duplicate anything.
 
     Rules:
     - Files with identical MD5 hashes are duplicates
@@ -37,43 +41,54 @@ def detect_duplicates(index: dict) -> dict:
     - All others get duplicate_of = <original_path>
     """
 
-    # Step 1: Clear all existing duplicate_of values
-    updated_index = {
-        path: {**entry, "duplicate_of": None}
-        for path, entry in index.items()
-    }
+    # Step 1: Resolve MD5 for each file — incremental for local files
+    updated_index = {}
 
-    # Step 2: Resolve MD5 for each file
-    # - Drive files: md5 is stored in the index (fetched free from the API)
-    # - Local files: compute md5 by reading from disk
-    md5_map = {}  # md5 → list of file paths
-
-    for path, entry in updated_index.items():
+    for path, entry in index.items():
         stored_md5 = entry.get("md5")
+        stored_md5_modified = entry.get("md5_computed_modified_at")
+        current_modified = entry.get("modified_at")
 
-        if stored_md5:
-            md5 = stored_md5
-        else:
-            file_path = Path(path)
-            if not file_path.exists():
-                continue
-            md5 = compute_md5(path)
+        if stored_md5 and stored_md5_modified == current_modified:
+            # MD5 is up to date — no disk read needed
+            updated_index[path] = entry
+            continue
 
-        md5_map.setdefault(md5, []).append(path)
+        if stored_md5 and not stored_md5_modified:
+            # Drive file (or old index entry with stored md5 but no timestamp) — trust it
+            updated_index[path] = entry
+            continue
+
+        # Local file: new or modified — compute MD5 from disk
+        file_path = Path(path)
+        if not file_path.exists():
+            updated_index[path] = entry
+            continue
+
+        md5 = compute_md5(path)
+        updated_index[path] = {**entry, "md5": md5, "md5_computed_modified_at": current_modified}
+
+    # Step 2: Clear duplicate_of and rebuild from stored MD5s
+    for path in updated_index:
+        updated_index[path]["duplicate_of"] = None
+
+    md5_map: dict[str, list[str]] = {}
+    for path, entry in updated_index.items():
+        md5 = entry.get("md5")
+        if md5:
+            md5_map.setdefault(md5, []).append(path)
 
     # Step 3: Mark duplicates
     for md5, paths in md5_map.items():
         if len(paths) <= 1:
             continue
 
-        # If all files in the group are temp files, mark every one as deletable
         if all(is_temp_file(p) for p in paths):
             for p in paths:
                 updated_index[p]["duplicate_of"] = "__temp_file__"
             continue
 
         original = paths[0]
-
         for dup in paths[1:]:
             updated_index[dup]["duplicate_of"] = original
 

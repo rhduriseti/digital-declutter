@@ -5,7 +5,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
-from rich.progress import track
+from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn, MofNCompleteColumn
 from rich import box
 
 from declutter_bot.tools.scan_folder import scan_folder
@@ -14,11 +14,13 @@ from declutter_bot.connectors.gdrive import GoogleDriveConnector
 from declutter_bot.tools.categorize_files import categorize_files
 from declutter_bot.tools.detect_duplicates import detect_duplicates
 from declutter_bot.tools.generate_report import generate_report, generate_report_for_scan
+from declutter_bot.tools.generate_organised_view import generate_organised_view
 from declutter_bot.tools.search_index import search_index
 from declutter_bot.tools.delete_duplicates import get_deletable_paths, delete_duplicates
 from declutter_bot.tools.scan_folder import is_project_folder
 from declutter_bot.core.blacklist_manager import add_to_blacklist, remove_from_blacklist, load_blacklist, is_blacklisted
 from declutter_bot.core.staging_manager import restore_file, restore_all, empty_staging, get_staging_summary
+from declutter_bot.core.utils import format_size
 
 
 console = Console()
@@ -42,17 +44,17 @@ def wprint(msg):
 def print_plain_scan_summary(report):
     print("\n=== SUMMARY ===")
     print(f"Total files: {report['total_files']}")
-    print(f"Total size: {report['total_size_bytes']} bytes")
+    print(f"Total size: {format_size(report['total_size_bytes'])}")
     print("Categories:")
     for cat, count in report["categories"].items():
         print(f"  - {cat}: {count}")
     print(f"Duplicate files: {len(report['duplicates'])}")
-    print(f"Space saved by deleting duplicates: {report['space_saved_by_deleting_duplicates_bytes']} bytes")
+    print(f"Space saved by deleting duplicates: {format_size(report['space_saved_by_deleting_duplicates_bytes'])}")
     if report["duplicates"]:
         print("Duplicates:")
         for f in report["duplicates"]:
             origin = "temp file — safe to delete" if f["duplicate_of"] == "__temp_file__" else f"duplicate of {f['duplicate_of']}"
-            print(f"  - {f['path']} ({origin}, {f['size_bytes']} bytes)")
+            print(f"  - {f['path']} ({origin}, {format_size(f['size_bytes'])})")
 
 
 def print_plain_search_results(results, query):
@@ -67,17 +69,17 @@ def print_plain_search_results(results, query):
 def print_plain_global_report(report):
     print("\n=== GLOBAL REPORT ===")
     print(f"Total files: {report['total_files']}")
-    print(f"Total size: {report['total_size_bytes']} bytes")
+    print(f"Total size: {format_size(report['total_size_bytes'])}")
     print("Categories:")
     for cat, count in report["categories"].items():
         print(f"  - {cat}: {count}")
     print(f"Duplicate files: {len(report['duplicates'])}")
-    print(f"Space saved by deleting duplicates: {report['space_saved_by_deleting_duplicates_bytes']} bytes")
+    print(f"Space saved by deleting duplicates: {format_size(report['space_saved_by_deleting_duplicates_bytes'])}")
     if report["duplicates"]:
         print("Duplicates:")
         for f in report["duplicates"]:
             origin = "temp file — safe to delete" if f["duplicate_of"] == "__temp_file__" else f"duplicate of {f['duplicate_of']}"
-            print(f"  - {f['path']} ({origin}, {f['size_bytes']} bytes)")
+            print(f"  - {f['path']} ({origin}, {format_size(f['size_bytes'])})")
 
 
 # ------------------------------------------------------------
@@ -89,7 +91,7 @@ def render_scan_report(report, folder):
 
     stats = Table(show_header=False, box=box.SIMPLE)
     stats.add_row("Total files", str(report["total_files"]))
-    stats.add_row("Total size", f"{report['total_size_bytes']:,} bytes")
+    stats.add_row("Total size", format_size(report['total_size_bytes']))
     console.print(stats)
     console.print()
 
@@ -103,13 +105,13 @@ def render_scan_report(report, folder):
 
     dup_files = report["duplicates"]
     space_saved = report["space_saved_by_deleting_duplicates_bytes"]
-    dup_table = Table(title=f"Duplicate Files  |  Space saved: {space_saved:,} bytes", box=box.MINIMAL_DOUBLE_HEAD)
+    dup_table = Table(title=f"Duplicate Files  |  Space saved: {format_size(space_saved)}", box=box.MINIMAL_DOUBLE_HEAD)
     dup_table.add_column("Duplicate File", style="bold magenta")
     dup_table.add_column("Duplicate Of", style="cyan")
     dup_table.add_column("Size", justify="right")
     for f in dup_files:
         origin = "temp file — safe to delete" if f["duplicate_of"] == "__temp_file__" else f["duplicate_of"]
-        dup_table.add_row(f["path"], origin, f"{f['size_bytes']:,} bytes")
+        dup_table.add_row(f["path"], origin, format_size(f['size_bytes']))
     console.print(dup_table)
     console.print()
 
@@ -126,16 +128,51 @@ def render_search_results(results, query):
     console.print(table)
 
 
+def render_organised_view(index: dict, source: str = None):
+    organised = generate_organised_view(index if not source else {
+        k: v for k, v in index.items() if v.get("source") == source
+    })
+
+    if not organised:
+        console.print("[yellow]No files in index yet. Run a scan first.[/yellow]")
+        return
+
+    total = sum(len(files) for files in organised.values())
+    console.print()
+    console.print(Panel.fit(f"[bold cyan]Organised View[/]  —  {total} files", border_style="cyan"))
+
+    table = Table(box=box.MINIMAL_DOUBLE_HEAD, show_lines=False)
+    table.add_column("Category", style="bold green", width=16)
+    table.add_column("File", style="white")
+    table.add_column("Source", style="cyan", width=14)
+    table.add_column("Size", justify="right", width=9)
+    table.add_column("", width=4)  # duplicate flag
+
+    for cat, files in organised.items():
+        first = True
+        for f in files:
+            table.add_row(
+                cat if first else "",
+                f["name"],
+                f["source"],
+                format_size(f["size_bytes"]),
+                "[yellow]⚠[/yellow]" if f["duplicate_of"] else "",
+            )
+            first = False
+
+    console.print(table)
+
+
 def render_global_report(report):
     summary = Table(title="📊 Summary Report")
     summary.add_column("Metric", style="cyan", no_wrap=True)
     summary.add_column("Value", style="magenta")
 
     summary.add_row("Total Files", str(report["total_files"]))
-    summary.add_row("Total Size (bytes)", f"{report['total_size_bytes']:,}")
+    summary.add_row("Total Size", format_size(report['total_size_bytes']))
     summary.add_row("Categories", str(len(report["categories"])))
     summary.add_row("Duplicate Files", str(len(report["duplicates"])))
-    summary.add_row("Space Saved by Deleting Duplicates", f"{report['space_saved_by_deleting_duplicates_bytes']:,} bytes")
+    summary.add_row("Space Saved by Deleting Duplicates", format_size(report['space_saved_by_deleting_duplicates_bytes']))
 
     console.print(summary)
 
@@ -147,7 +184,7 @@ def render_global_report(report):
         dup_table.add_column("Size", justify="right")
         for f in report["duplicates"]:
             origin = "temp file — safe to delete" if f["duplicate_of"] == "__temp_file__" else f["duplicate_of"]
-            dup_table.add_row(f["path"], origin, f"{f['size_bytes']:,} bytes")
+            dup_table.add_row(f["path"], origin, format_size(f['size_bytes']))
         console.print(dup_table)
 
 
@@ -175,26 +212,47 @@ def run_pipeline(folder, args):
         console.print("To remove from blacklist: [bold]declutter blacklist remove <folder>[/bold]")
         return None
 
-    for _ in track(scanned, description="Indexing files..."):
-        pass
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        console=console,
+    ) as progress:
 
-    vprint("Updating index...", args)
-    update_index_with_scan(scanned)
+        # Step 1 — Indexing (real progress, we know the count)
+        t_index = progress.add_task("Indexing files...", total=len(scanned))
+        update_index_with_scan(scanned)
+        progress.update(t_index, completed=len(scanned))
 
-    vprint("Loading index...", args)
-    index = load_index()
+        # Step 2 — Load index
+        index = load_index()
+        total = len(index)
 
-    vprint("Categorizing files...", args)
-    index = categorize_files(index)
+        # Step 3 — Categorising (only files that are new or modified since last categorisation)
+        needs_cat = sum(
+            1 for e in index.values()
+            if not e.get("category") or
+            e.get("categorised_modified_at", e.get("modified_at")) != e.get("modified_at")
+        )
+        t_cat = progress.add_task("Categorising files...", total=max(needs_cat, 1))
+        index = categorize_files(index)
+        progress.update(t_cat, completed=max(needs_cat, 1))
 
-    vprint("Detecting duplicates...", args)
-    index = detect_duplicates(index)
+        # Step 4 — Detecting duplicates
+        t_dup = progress.add_task("Detecting duplicates...", total=total)
+        index = detect_duplicates(index)
+        progress.update(t_dup, completed=total)
 
-    vprint("Saving index...", args)
-    save_index(index)
+        # Step 5 — Saving
+        t_save = progress.add_task("Saving index...", total=1)
+        save_index(index)
+        progress.update(t_save, completed=1)
 
-    vprint("Generating report...", args)
-    report = generate_report_for_scan(index, folder_path)
+        # Step 6 — Report
+        t_report = progress.add_task("Generating report...", total=1)
+        report = generate_report_for_scan(index, folder_path)
+        progress.update(t_report, completed=1)
 
     console.print("✨ [bold green]Scan complete![/bold green]")
     return report
@@ -215,16 +273,45 @@ def run_drive_pipeline(account_name: str, args):
         console.print(f"[red]{e}[/red]")
         return None
 
-    console.print(f"Found [bold]{len(scanned)}[/bold] files. Updating index...")
+    console.print(f"Found [bold]{len(scanned)}[/bold] files.")
 
-    update_index_with_scan(scanned)
-    index = load_index()
-    index = categorize_files(index)
-    index = detect_duplicates(index)
-    save_index(index)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        console=console,
+    ) as progress:
 
-    report = generate_report(index)
-    console.print(f"✨ [bold green]Drive scan complete![/bold green]")
+        t_index = progress.add_task("Indexing files...", total=len(scanned))
+        update_index_with_scan(scanned)
+        progress.update(t_index, completed=len(scanned))
+
+        index = load_index()
+        total = len(index)
+
+        needs_cat = sum(
+            1 for e in index.values()
+            if not e.get("category") or
+            e.get("categorised_modified_at", e.get("modified_at")) != e.get("modified_at")
+        )
+        t_cat = progress.add_task("Categorising files...", total=max(needs_cat, 1))
+        index = categorize_files(index)
+        progress.update(t_cat, completed=max(needs_cat, 1))
+
+        t_dup = progress.add_task("Detecting duplicates...", total=total)
+        index = detect_duplicates(index)
+        progress.update(t_dup, completed=total)
+
+        t_save = progress.add_task("Saving index...", total=1)
+        save_index(index)
+        progress.update(t_save, completed=1)
+
+        t_report = progress.add_task("Generating report...", total=1)
+        report = generate_report(index)
+        progress.update(t_report, completed=1)
+
+    console.print("✨ [bold green]Drive scan complete![/bold green]")
     return report
 
 
@@ -253,6 +340,7 @@ def main():
     # report
     report_cmd = sub.add_parser("report", help="Show summary report")
     report_cmd.add_argument("--source", default=None, help="Filter by source: 'local', 'gdrive:<account>', or omit for all")
+    report_cmd.add_argument("--organised", action="store_true", help="Show files grouped by subject category")
     report_cmd.add_argument("--json", action="store_true")
     report_cmd.add_argument("--pretty", action="store_true")
     report_cmd.add_argument("--verbose", action="store_true")
@@ -348,6 +436,11 @@ def main():
     # -------------------------
     if args.command == "report":
         index = load_index()
+
+        if args.organised:
+            render_organised_view(index, source=args.source)
+            return
+
         if args.source:
             index = {k: v for k, v in index.items() if v.get("source") == args.source}
         report = generate_report(index)
@@ -404,12 +497,12 @@ def main():
                 console.print("[yellow]Staging is empty. Nothing to restore or delete.[/yellow]")
             else:
                 total_bytes = sum(e["size_bytes"] for e in entries)
-                table = Table(title=f"Staged Files  |  {len(entries)} file(s)  |  {total_bytes:,} bytes recoverable", box=box.MINIMAL_DOUBLE_HEAD)
+                table = Table(title=f"Staged Files  |  {len(entries)} file(s)  |  {format_size(total_bytes)} recoverable", box=box.MINIMAL_DOUBLE_HEAD)
                 table.add_column("Original Path", style="magenta")
                 table.add_column("Staged At", style="cyan")
                 table.add_column("Size", justify="right")
                 for e in entries:
-                    table.add_row(e["original_path"], e["staged_at"], f"{e['size_bytes']:,} bytes")
+                    table.add_row(e["original_path"], e["staged_at"], format_size(e['size_bytes']))
                 console.print(table)
                 console.print("\nTo restore all:        [bold]declutter staging restore --all[/bold]")
                 console.print("To free disk space:    [bold]declutter staging empty[/bold]")
@@ -434,13 +527,13 @@ def main():
                 console.print("[yellow]Staging is already empty.[/yellow]")
                 return
             total_bytes = sum(e["size_bytes"] for e in entries)
-            console.print(f"\n[bold red]WARNING: This will permanently delete {len(entries)} staged file(s) ({total_bytes:,} bytes). This cannot be undone.[/bold red]")
+            console.print(f"\n[bold red]WARNING: This will permanently delete {len(entries)} staged file(s) ({format_size(total_bytes)}). This cannot be undone.[/bold red]")
             answer = input("Type YES to confirm: ").strip()
             if answer != "YES":
                 console.print("[yellow]Aborted.[/yellow]")
                 return
             deleted, bytes_freed = empty_staging()
-            console.print(f"[green]Done.[/green] Permanently deleted {deleted} file(s), freed {bytes_freed:,} bytes.")
+            console.print(f"[green]Done.[/green] Permanently deleted {deleted} file(s), freed {format_size(bytes_freed)}.")
         else:
             console.print("Usage: declutter staging [show|restore|empty]")
         return
@@ -476,16 +569,23 @@ def main():
         total_bytes = sum(t["size_bytes"] for t in targets)
         scope_label = f" in [white]{args.folder}[/white]" if args.folder else ""
         console.print(f"\nFound [bold]{len(targets)}[/bold] duplicate file(s){scope_label} — "
-                      f"[bold]{total_bytes:,}[/bold] bytes recoverable\n")
+                      f"[bold]{format_size(total_bytes)}[/bold] recoverable\n")
 
         for t in targets:
             origin = "temp file" if t["duplicate_of"] == "__temp_file__" else f"duplicate of {t['duplicate_of']}"
-            console.print(f"  [magenta]{t['path']}[/magenta]  ([cyan]{origin}[/cyan], {t['size_bytes']:,} bytes)")
+            console.print(f"  [magenta]{t['path']}[/magenta]  ([cyan]{origin}[/cyan], {format_size(t['size_bytes'])})")
 
         # Dry run — stop here
         if args.dry_run:
             console.print("\n[yellow]Dry run — no files were deleted.[/yellow]")
             return
+
+        # Default (no flags) — confirm once before moving to staging
+        if not args.permanent and not args.interactive:
+            answer = input("\nMove all to staging? Files can be recovered with 'declutter staging restore --all'. [y/N]: ").strip().lower()
+            if answer != "y":
+                console.print("[yellow]Aborted.[/yellow]")
+                return
 
         # Permanent delete — confirm all upfront (unless interactive, which confirms per file)
         if args.permanent and not args.interactive:
@@ -505,7 +605,7 @@ def main():
             console.print()
             for t in targets:
                 origin = "temp file" if t["duplicate_of"] == "__temp_file__" else f"duplicate of {t['duplicate_of']}"
-                console.print(f"[magenta]{t['path']}[/magenta]  ({origin}, {t['size_bytes']:,} bytes)")
+                console.print(f"[magenta]{t['path']}[/magenta]  ({origin}, {format_size(t['size_bytes'])})")
                 if args.permanent:
                     console.print(f"[bold red]WARNING: {action_word} is permanent and cannot be undone.[/bold red]")
                 answer = input(f"  {action_word.capitalize()}? [y/N]: ").strip().lower()
@@ -528,9 +628,15 @@ def main():
 
         console.print(f"\n[green]Done.[/green] Deleted [bold]{len(deleted)}[/bold] file(s).")
         if skipped:
-            console.print(f"[yellow]Skipped {len(skipped)} file(s):[/yellow]")
+            console.print(f"\n[yellow]Skipped {len(skipped)} Drive file(s) — open in Drive to delete manually:[/yellow]")
             for s in skipped:
-                console.print(f"  - {s}")
+                link = updated_index.get(s, {}).get("web_view_link")
+                name = updated_index.get(s, {}).get("name", s)
+                if link:
+                    console.print(f"  [cyan]{name}[/cyan]")
+                    console.print(f"  [blue underline]{link}[/blue underline]")
+                else:
+                    console.print(f"  [cyan]{name}[/cyan]  (no link available)")
         return
 
     # -------------------------

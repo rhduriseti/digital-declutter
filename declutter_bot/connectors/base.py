@@ -22,18 +22,3 @@ class SourceConnector(ABC):
     def scan(self) -> list[FileMetadata]:
         """Scan the source and return a list of FileMetadata objects."""
         ...
-
-    @abstractmethod
-    def trash(self, file_id: str) -> bool:
-        """Move a file to trash (recoverable). Returns True on success."""
-        ...
-
-    @abstractmethod
-    def untrash(self, file_id: str) -> bool:
-        """Restore a file from trash. Returns True on success."""
-        ...
-
-    @abstractmethod
-    def permanent_delete(self, file_id: str) -> bool:
-        """Permanently delete a file. This cannot be undone. Returns True on success."""
-        ...

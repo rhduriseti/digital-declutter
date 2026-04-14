@@ -75,6 +75,10 @@ SEED_MAP = {
         "pe", "health", "fitness", "exercise", "nutrition", "muscle",
         "cardio", "sport", "workout", "physical"
     ],
+    "science": [
+        "science", "sci", "experiment", "lab", "hypothesis", "observation",
+        "data", "results", "conclusion", "scientific", "investigation", "project"
+    ],
 }
 
 # ---------------------------------------------------------
@@ -173,3 +177,15 @@ CATEGORY_MAP = {
     ".iso": "disk_images",
     ".db": "databases",
 }
+
+
+def format_size(size_bytes: int) -> str:
+    """Return a human-readable file size string (e.g. 1.2 MB, 3.4 GB)."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 ** 2:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 ** 3:
+        return f"{size_bytes / 1024 ** 2:.1f} MB"
+    else:
+        return f"{size_bytes / 1024 ** 3:.2f} GB"

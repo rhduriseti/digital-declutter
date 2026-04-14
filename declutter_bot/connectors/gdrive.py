@@ -4,8 +4,9 @@ from declutter_bot.connectors.base import SourceConnector
 from declutter_bot.core.file_metadata import FileMetadata
 from declutter_bot.core.paths import DRIVE_ACCOUNTS_DIR, GOOGLE_CREDENTIALS_PATH
 
-# Google OAuth scopes needed — drive.file would be too narrow, we need full metadata read
-SCOPES = ["https://www.googleapis.com/auth/drive"]
+# drive.readonly — non-sensitive scope, easier Google verification
+# Full drive scope added later once verified, UI doesn't change
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 
 # File extensions we care about — mirrors scan_folder whitelist
 DRIVE_EXT_WHITELIST = {
@@ -24,9 +25,9 @@ GOOGLE_MIME_EXPORT = {
     "application/vnd.google-apps.presentation": ".pptx",
 }
 
-# Drive API fields to fetch per file — md5Checksum is free, no download needed
+# Drive API fields to fetch per file — md5Checksum and webViewLink are free, no download needed
 DRIVE_FILE_FIELDS = (
-    "id, name, mimeType, size, md5Checksum, modifiedTime, parents"
+    "id, name, mimeType, size, md5Checksum, modifiedTime, parents, webViewLink"
 )
 
 
@@ -151,48 +152,6 @@ class GoogleDriveConnector(SourceConnector):
             ext_whitelist=DRIVE_EXT_WHITELIST,
             google_mime_export=GOOGLE_MIME_EXPORT,
         )
-
-    # ------------------------------------------------------------------
-    # Trash / restore / delete
-    # ------------------------------------------------------------------
-
-    def _file_id_from(self, file_id: str) -> str:
-        """
-        Accept either a raw Drive file ID or the full path key used in the index
-        e.g. "gdrive:school//1aBcDeFgHiJk" → "1aBcDeFgHiJk"
-        """
-        if "//" in file_id:
-            return file_id.split("//")[-1]
-        return file_id
-
-    def trash(self, file_id: str) -> bool:
-        try:
-            self._get_service().files().update(
-                fileId=self._file_id_from(file_id),
-                body={"trashed": True}
-            ).execute()
-            return True
-        except Exception:
-            return False
-
-    def untrash(self, file_id: str) -> bool:
-        try:
-            self._get_service().files().update(
-                fileId=self._file_id_from(file_id),
-                body={"trashed": False}
-            ).execute()
-            return True
-        except Exception:
-            return False
-
-    def permanent_delete(self, file_id: str) -> bool:
-        try:
-            self._get_service().files().delete(
-                fileId=self._file_id_from(file_id)
-            ).execute()
-            return True
-        except Exception:
-            return False
 
     # ------------------------------------------------------------------
     # Account management helpers

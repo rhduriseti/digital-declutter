@@ -62,7 +62,7 @@ def move_to_staging(file_path: str) -> str:
 
 def restore_file(original_path: str) -> bool:
     """
-    Restore a file from staging back to its original location.
+    Restore a local file from staging back to its original location.
     Returns True if restored, False if not found in log.
     """
     log = load_staging_log()
@@ -75,7 +75,6 @@ def restore_file(original_path: str) -> bool:
     dst = Path(original_path)
 
     if not staged.exists():
-        # Already gone from staging — clean up log entry
         del log[original_path]
         save_staging_log(log)
         return False
@@ -116,7 +115,7 @@ def restore_all() -> tuple[int, int]:
 
 def empty_staging() -> tuple[int, int]:
     """
-    Permanently delete all files in staging and clear the log.
+    Permanently delete all local files in staging and clear the log.
     Returns (deleted_count, total_bytes_freed).
     """
     log = load_staging_log()
