@@ -9,3 +9,4 @@ dist/
 build/
 .env
 credentials.json
+credentials_web.json
