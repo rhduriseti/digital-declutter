@@ -1,36 +1,79 @@
 import json
+from pathlib import Path
 from typing import List, Dict
 
 from declutter_bot.core.file_metadata import FileMetadata
-from declutter_bot.core.paths import INDEX_PATH
+from declutter_bot.core.paths import get_index_path, DRIVE_ACCOUNTS_DIR
 
-def load_index() -> Dict[str, dict]:
-    """
-    Load index.json and return a dictionary keyed by file path.
-    If the file doesn't exist, return an empty index.
-    """
-    if not INDEX_PATH.exists():
+
+def load_index(source_id: str = "local") -> Dict[str, dict]:
+    """Load index for a specific source. Returns empty dict if not found."""
+    path = get_index_path(source_id)
+    if not path.exists():
         return {}
-
-    with open(INDEX_PATH, "r") as f:
+    with open(path, "r") as f:
         data = json.load(f)
-
     return data.get("files", {})
 
 
+def save_index(index: Dict[str, dict], source_id: str = "local"):
+    """Save index for a specific source."""
+    path = get_index_path(source_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump({"files": index}, f, indent=2, default=str)
 
-def save_index(index: Dict[str, dict]):
-    """
-    Save the index dictionary back to index.json.
-    """
-    INDEX_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-    data = {
-        "files": index
+def load_combined_index() -> Dict[str, dict]:
+    """
+    Merge all available indexes into one dict for reporting and search.
+    Only loads indexes for connected accounts (those with a token file).
+    Disconnected accounts are automatically excluded — no cleanup needed.
+    Reconnecting an account instantly restores its index without rescanning.
+    """
+    combined = {}
+    combined.update(load_index("local"))
+
+    if DRIVE_ACCOUNTS_DIR.exists():
+        for token_file in DRIVE_ACCOUNTS_DIR.glob("*.json"):
+            account_name = token_file.stem
+            source_id = f"gdrive:{account_name}"
+            combined.update(load_index(source_id))
+
+    return combined
+
+
+def untrack_folder(folder: str) -> int:
+    """
+    Remove all local index entries whose path is under the given folder.
+    Does not blacklist — the folder can be added back and scanned again later.
+    Returns number of entries removed.
+    """
+    folder_path = Path(folder).resolve()
+    index = load_index("local")
+    kept = {
+        p: e for p, e in index.items()
+        if not Path(p).resolve().is_relative_to(folder_path)
     }
+    removed = len(index) - len(kept)
+    if removed > 0:
+        save_index(kept, "local")
+    return removed
 
-    with open(INDEX_PATH, "w") as f:
-        json.dump(data, f, indent=2, default=str)
+
+def purge_source_from_index(source_id: str) -> int:
+    """
+    Only used for blacklist-style purges where data should be permanently removed.
+    Logout does NOT call this — token deletion is enough to hide the data.
+    Returns number of entries removed.
+    """
+    path = get_index_path(source_id)
+    if not path.exists():
+        return 0
+    index = load_index(source_id)
+    removed = len(index)
+    path.unlink()
+    return removed
 
 
 def merge_scans(existing_index: Dict[str, dict],
@@ -44,23 +87,16 @@ def merge_scans(existing_index: Dict[str, dict],
     - If file exists and unchanged → keep existing (preserve category, duplicate info)
     - DO NOT delete files just because they weren't in this scan
     """
-
     updated_index = {}
-
-    # Convert new scan to a dict keyed by path
     new_scan_dict = {str(item.path): item for item in new_scan}
 
-    # 1. Handle existing files
     for path, old_entry in existing_index.items():
-
         if path not in new_scan_dict:
-            # File wasn't in this scan → keep it
             updated_index[path] = old_entry
             continue
 
         new_item = new_scan_dict[path]
 
-        # Check if timestamps changed
         if old_entry["modified_at"] != str(new_item.modified_at):
             updated_entry = {
                 "path": str(new_item.path),
@@ -80,7 +116,6 @@ def merge_scans(existing_index: Dict[str, dict],
 
         updated_index[path] = updated_entry
 
-    # 2. Handle new files
     for path, item in new_scan_dict.items():
         if path not in updated_index:
             updated_index[path] = {
@@ -100,27 +135,10 @@ def merge_scans(existing_index: Dict[str, dict],
     return updated_index
 
 
-
-def purge_source_from_index(source_id: str) -> int:
+def update_index_with_scan(new_scan: List[FileMetadata], source_id: str = "local"):
     """
-    Remove all index entries for a given source (e.g. 'gdrive:personal').
-    Returns the number of entries removed.
+    Load index for this source, merge new scan results, save back.
     """
-    index = load_index()
-    filtered = {k: v for k, v in index.items() if v.get("source") != source_id}
-    removed = len(index) - len(filtered)
-    if removed > 0:
-        save_index(filtered)
-    return removed
-
-
-def update_index_with_scan(new_scan: List[FileMetadata]):
-    """
-    High-level function:
-    - load index
-    - merge
-    - save
-    """
-    existing = load_index()
+    existing = load_index(source_id)
     merged = merge_scans(existing, new_scan)
-    save_index(merged)
+    save_index(merged, source_id)

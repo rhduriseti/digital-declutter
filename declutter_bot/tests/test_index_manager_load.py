@@ -5,15 +5,14 @@ from declutter_bot.core.index_manager import load_index, save_index
 
 
 def test_index_load_empty(tmp_path, monkeypatch):
-    # Redirect index.json to a temporary location
-    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
+    monkeypatch.setattr("declutter_bot.core.paths.DATA_DIR", tmp_path)
 
-    index = load_index()
-    assert index == {}  # No file → empty index
+    index = load_index("local")
+    assert index == {}
 
 
 def test_index_save_and_load(tmp_path, monkeypatch):
-    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
+    monkeypatch.setattr("declutter_bot.core.paths.DATA_DIR", tmp_path)
 
     sample = {
         "/tmp/a.txt": {
@@ -28,7 +27,7 @@ def test_index_save_and_load(tmp_path, monkeypatch):
         }
     }
 
-    save_index(sample)
-    loaded = load_index()
+    save_index(sample, "local")
+    loaded = load_index("local")
 
     assert loaded == sample

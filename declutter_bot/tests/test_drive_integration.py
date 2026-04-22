@@ -276,42 +276,44 @@ def test_from_drive_web_view_link_none_when_missing():
 # purge_source_from_index — logout cleans up index
 # ---------------------------------------------------------
 
-def test_purge_source_removes_only_matching_entries(tmp_path, monkeypatch):
-    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
+def test_purge_source_removes_source_index_file(tmp_path, monkeypatch):
+    """purge_source_from_index deletes the per-source index file and returns entry count."""
+    monkeypatch.setattr("declutter_bot.core.paths.DATA_DIR", tmp_path)
 
-    from declutter_bot.core.index_manager import save_index, load_index
+    from declutter_bot.core.index_manager import save_index
 
-    index = {
+    personal_index = {
         "gdrive:personal/file1": {"source": "gdrive:personal", "name": "a.pdf"},
         "gdrive:personal/file2": {"source": "gdrive:personal", "name": "b.pdf"},
-        "gdrive:school/file3":   {"source": "gdrive:school",   "name": "c.pdf"},
-        "/local/file4.pdf":      {"source": "local",           "name": "d.pdf"},
     }
-    save_index(index)
+    school_index = {
+        "gdrive:school/file3": {"source": "gdrive:school", "name": "c.pdf"},
+    }
+    save_index(personal_index, "gdrive:personal")
+    save_index(school_index, "gdrive:school")
 
     removed = purge_source_from_index("gdrive:personal")
 
     assert removed == 2
-    remaining = load_index()
-    assert "gdrive:personal/file1" not in remaining
-    assert "gdrive:personal/file2" not in remaining
-    assert "gdrive:school/file3" in remaining
-    assert "/local/file4.pdf" in remaining
+    assert not (tmp_path / "gdrive_personal_index.json").exists()
+    assert (tmp_path / "gdrive_school_index.json").exists()
 
 
-def test_purge_source_returns_zero_when_no_match(tmp_path, monkeypatch):
-    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
-
-    from declutter_bot.core.index_manager import save_index
-
-    save_index({"/local/file.pdf": {"source": "local", "name": "file.pdf"}})
+def test_purge_source_returns_zero_when_no_index_file(tmp_path, monkeypatch):
+    """Returns 0 when the source has no index file."""
+    monkeypatch.setattr("declutter_bot.core.paths.DATA_DIR", tmp_path)
 
     removed = purge_source_from_index("gdrive:personal")
     assert removed == 0
 
 
 def test_purge_source_handles_empty_index(tmp_path, monkeypatch):
-    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
+    """Returns 0 when the source index file exists but is empty."""
+    monkeypatch.setattr("declutter_bot.core.paths.DATA_DIR", tmp_path)
+
+    from declutter_bot.core.index_manager import save_index
+
+    save_index({}, "gdrive:personal")
 
     removed = purge_source_from_index("gdrive:personal")
     assert removed == 0

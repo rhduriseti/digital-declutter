@@ -5,7 +5,9 @@ from pathlib import Path
 import ollama
 
 from declutter_bot.core.utils import KEYWORD_TO_SUBJECT, SEED_MAP
-from declutter_bot.core.paths import DATA_DIR, EXPANDED_MAP_PATH
+from declutter_bot.core.paths import DATA_DIR, get_expanded_map_path
+
+EXPANDED_MAP_PATH = get_expanded_map_path("local")
 
 # Folder names that are too generic to use as subject signals
 GENERIC_FOLDER_NAMES = {
@@ -110,16 +112,32 @@ def classify_by_seed_map(file_path: str) -> str | None:
     Step 3: Full keyword scan against the seed map.
     Checks both folder and filename tokens together.
     Catches cases where step 1 & 2 missed due to generic folder names.
+
+    Case-insensitive. Handles both single-word keywords ("biology") and
+    multi-word phrases ("food deserts", "climate change") by checking the
+    full lowercased text before falling back to individual tokens.
     """
     path = Path(file_path)
-    all_text = " ".join([path.stem] + [p.name for p in path.parents])
-    keywords = extract_keywords(all_text)
+    # Lowercase everything for case-insensitive matching
+    all_text = " ".join([path.stem] + [p.name for p in path.parents]).lower()
 
-    for kw in keywords:
-        if kw in KEYWORD_TO_SUBJECT:
-            return KEYWORD_TO_SUBJECT[kw]
+    scores: dict[str, int] = {}
 
-    return None
+    # Multi-word phrases count double (more specific signal)
+    # Use regex word boundaries so "food deserts-" still matches "food deserts"
+    for kw, subject in KEYWORD_TO_SUBJECT.items():
+        if " " in kw:
+            pattern = r"\b" + re.escape(kw) + r"\b"
+            if re.search(pattern, all_text):
+                scores[subject] = scores.get(subject, 0) + 2
+
+    # Single-word tokens count once
+    for token in extract_keywords(all_text):
+        if token in KEYWORD_TO_SUBJECT:
+            subject = KEYWORD_TO_SUBJECT[token]
+            scores[subject] = scores.get(subject, 0) + 1
+
+    return max(scores, key=scores.get) if scores else None
 
 
 # ---------------------------------------------------------

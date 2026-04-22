@@ -36,15 +36,15 @@ def add_to_blacklist(folder: str) -> tuple[bool, int]:
     folders.add(path_str)
     save_blacklist(folders)
 
-    # Purge all index entries under this folder
-    index = load_index()
+    # Purge all index entries under this folder (local only — blacklist is local-only)
+    index = load_index("local")
     purged = {
         p: e for p, e in index.items()
         if not Path(p).resolve().is_relative_to(resolved)
     }
     removed = len(index) - len(purged)
     if removed > 0:
-        save_index(purged)
+        save_index(purged, "local")
 
     return True, removed
 

@@ -25,11 +25,11 @@ def _run_local_scan(job_id: str, folder: str):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             scanned = scan_folder(folder)
-            update_index_with_scan(scanned)
-            index = load_index()
+            update_index_with_scan(scanned, "local")
+            index = load_index("local")
             index = categorize_files(index)
             index = detect_duplicates(index)
-            save_index(index)
+            save_index(index, "local")
             report = generate_report_for_scan(index, Path(folder))
         scan_state.set_done(job_id, report, [str(w.message) for w in caught])
     except Exception as e:
@@ -38,15 +38,16 @@ def _run_local_scan(job_id: str, folder: str):
 
 def _run_drive_scan(job_id: str, account_name: str):
     try:
+        source_id = f"gdrive:{account_name}"
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             connector = GoogleDriveConnector(account_name)
             scanned = connector.scan()
-            update_index_with_scan(scanned)
-            index = load_index()
+            update_index_with_scan(scanned, source_id)
+            index = load_index(source_id)
             index = categorize_files(index)
             index = detect_duplicates(index)
-            save_index(index)
+            save_index(index, source_id)
             report = generate_report(index)
         scan_state.set_done(job_id, report, [str(w.message) for w in caught])
     except Exception as e:

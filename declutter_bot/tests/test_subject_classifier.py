@@ -66,7 +66,7 @@ def test_classify_by_filename_no_match():
 
 def test_classify_by_seed_map_catches_keyword_in_path():
     result = classify_by_seed_map("/Users/student/homework/essay_draft.docx")
-    assert result == "english"
+    assert result == "writing"  # "essay" matches writing subject
 
 def test_classify_by_seed_map_chemistry():
     result = classify_by_seed_map("/Users/student/stoichiometry_notes.pdf")

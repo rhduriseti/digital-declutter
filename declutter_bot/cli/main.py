@@ -9,7 +9,7 @@ from rich.progress import track, Progress, SpinnerColumn, TextColumn, BarColumn,
 from rich import box
 
 from declutter_bot.tools.scan_folder import scan_folder
-from declutter_bot.core.index_manager import update_index_with_scan, load_index, save_index
+from declutter_bot.core.index_manager import update_index_with_scan, load_index, save_index, load_combined_index, untrack_folder
 from declutter_bot.connectors.gdrive import GoogleDriveConnector
 from declutter_bot.tools.categorize_files import categorize_files
 from declutter_bot.tools.detect_duplicates import detect_duplicates
@@ -222,11 +222,11 @@ def run_pipeline(folder, args):
 
         # Step 1 — Indexing (real progress, we know the count)
         t_index = progress.add_task("Indexing files...", total=len(scanned))
-        update_index_with_scan(scanned)
+        update_index_with_scan(scanned, "local")
         progress.update(t_index, completed=len(scanned))
 
         # Step 2 — Load index
-        index = load_index()
+        index = load_index("local")
         total = len(index)
 
         # Step 3 — Categorising (only files that are new or modified since last categorisation)
@@ -246,7 +246,7 @@ def run_pipeline(folder, args):
 
         # Step 5 — Saving
         t_save = progress.add_task("Saving index...", total=1)
-        save_index(index)
+        save_index(index, "local")
         progress.update(t_save, completed=1)
 
         # Step 6 — Report
@@ -283,11 +283,12 @@ def run_drive_pipeline(account_name: str, args):
         console=console,
     ) as progress:
 
+        source_id = f"gdrive:{account_name}"
         t_index = progress.add_task("Indexing files...", total=len(scanned))
-        update_index_with_scan(scanned)
+        update_index_with_scan(scanned, source_id)
         progress.update(t_index, completed=len(scanned))
 
-        index = load_index()
+        index = load_index(source_id)
         total = len(index)
 
         needs_cat = sum(
@@ -304,7 +305,7 @@ def run_drive_pipeline(account_name: str, args):
         progress.update(t_dup, completed=total)
 
         t_save = progress.add_task("Saving index...", total=1)
-        save_index(index)
+        save_index(index, source_id)
         progress.update(t_save, completed=1)
 
         t_report = progress.add_task("Generating report...", total=1)
@@ -374,6 +375,10 @@ def main():
     # drive-accounts
     sub.add_parser("drive-accounts", help="List all connected Google Drive accounts")
 
+    # untrack
+    untrack_cmd = sub.add_parser("untrack", help="Remove a folder's files from the index (without blacklisting)")
+    untrack_cmd.add_argument("folder", help="Local folder to remove from index")
+
     # delete-duplicates
     delete_cmd = sub.add_parser("delete-duplicates", help="Delete duplicate files")
     delete_cmd.add_argument("--dry-run", action="store_true", help="Preview what would be deleted without making changes")
@@ -418,7 +423,7 @@ def main():
     # search
     # -------------------------
     if args.command == "search":
-        index = load_index()
+        index = load_combined_index()
         results = search_index(index, args.query)
 
         if args.json:
@@ -435,7 +440,7 @@ def main():
     # report
     # -------------------------
     if args.command == "report":
-        index = load_index()
+        index = load_combined_index()
 
         if args.organised:
             render_organised_view(index, source=args.source)
@@ -539,10 +544,22 @@ def main():
         return
 
     # -------------------------
+    # untrack
+    # -------------------------
+    if args.command == "untrack":
+        removed = untrack_folder(args.folder)
+        if removed > 0:
+            console.print(f"[green]Removed {removed} entries for:[/green] {args.folder}")
+            console.print(f"[dim]Folder is not blacklisted — you can scan it again anytime.[/dim]")
+        else:
+            console.print(f"[yellow]No index entries found for:[/yellow] {args.folder}")
+        return
+
+    # -------------------------
     # delete-duplicates
     # -------------------------
     if args.command == "delete-duplicates":
-        index = load_index()
+        index = load_combined_index()
 
         if args.folder and not folder_in_index(index, args.folder):
             folder_path = Path(args.folder).resolve()
@@ -557,7 +574,7 @@ def main():
                 return
             console.print(f"[yellow]Folder not scanned yet. Scanning {args.folder} first...[/yellow]")
             run_pipeline(args.folder, args)
-            index = load_index()
+            index = load_combined_index()
 
         targets = get_deletable_paths(index, folder=args.folder)
 
@@ -624,7 +641,8 @@ def main():
         console.print(f"\n{action} {len(targets)} file(s)...")
 
         updated_index, deleted, skipped = delete_duplicates(index, targets=targets, permanent=args.permanent)
-        save_index(updated_index)
+        local_entries = {k: v for k, v in updated_index.items() if v.get("source") == "local"}
+        save_index(local_entries, "local")
 
         console.print(f"\n[green]Done.[/green] Deleted [bold]{len(deleted)}[/bold] file(s).")
         if skipped:
@@ -659,10 +677,9 @@ def main():
     if args.command == "drive-logout":
         connector = GoogleDriveConnector(args.account_name)
         if connector.token_path.exists():
-            purged = connector.logout()
+            connector.logout()
             console.print(f"[green]Disconnected:[/green] {args.account_name}")
-            if purged > 0:
-                console.print(f"[yellow]Removed {purged} index entries for {args.account_name}.[/yellow]")
+            console.print(f"[dim]Index preserved — reconnect with drive-login to restore without rescanning.[/dim]")
         else:
             console.print(f"[yellow]No account found with name:[/yellow] {args.account_name}")
         return
@@ -674,7 +691,7 @@ def main():
         accounts = GoogleDriveConnector.list_accounts()
         if not accounts:
             console.print("[yellow]No Google Drive accounts connected.[/yellow]")
-            console.print("To connect one: [bold]declutter drive-login <name> --credentials <path>[/bold]")
+            console.print("To connect one: [bold]declutter drive-login <name>[/bold]")
         else:
             console.print(f"\n[bold]Connected Drive accounts ({len(accounts)}):[/bold]")
             for name in sorted(accounts):

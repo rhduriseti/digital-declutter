@@ -213,10 +213,7 @@ class GoogleDriveConnector(SourceConnector):
             return []
         return [p.stem for p in DRIVE_ACCOUNTS_DIR.glob("*.json")]
 
-    def logout(self) -> int:
-        """Remove the saved token and purge all index entries for this account.
-        Returns the number of index entries removed."""
-        from declutter_bot.core.index_manager import purge_source_from_index
+    def logout(self):
+        """Remove the saved token. Index is kept so reconnecting restores without rescan."""
         if self.token_path.exists():
             self.token_path.unlink()
-        return purge_source_from_index(self.source_id)

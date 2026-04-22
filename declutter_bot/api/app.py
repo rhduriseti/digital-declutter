@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from declutter_bot.api.routes import report, scan, search, staging, blacklist, drive
+from declutter_bot.api.routes import report, scan, search, staging, blacklist, drive, untrack
 
 app = FastAPI(title="Declutter API", version="0.1.0")
 
@@ -19,6 +19,7 @@ app.include_router(search.router)
 app.include_router(staging.router)
 app.include_router(blacklist.router)
 app.include_router(drive.router)
+app.include_router(untrack.router)
 
 
 @app.get("/")
