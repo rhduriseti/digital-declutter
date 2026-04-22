@@ -101,6 +101,19 @@ def merge_scans(existing_index: Dict[str, dict],
 
 
 
+def purge_source_from_index(source_id: str) -> int:
+    """
+    Remove all index entries for a given source (e.g. 'gdrive:personal').
+    Returns the number of entries removed.
+    """
+    index = load_index()
+    filtered = {k: v for k, v in index.items() if v.get("source") != source_id}
+    removed = len(index) - len(filtered)
+    if removed > 0:
+        save_index(filtered)
+    return removed
+
+
 def update_index_with_scan(new_scan: List[FileMetadata]):
     """
     High-level function:

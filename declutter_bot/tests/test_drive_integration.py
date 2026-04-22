@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from declutter_bot.core.file_metadata import FileMetadata
-from declutter_bot.core.index_manager import merge_scans
+from declutter_bot.core.index_manager import merge_scans, purge_source_from_index
 from declutter_bot.tools.detect_duplicates import detect_duplicates
 from declutter_bot.tools.delete_duplicates import get_deletable_paths
 
@@ -270,6 +270,51 @@ def test_from_drive_web_view_link_none_when_missing():
     drive_file.pop("webViewLink", None)
     meta = FileMetadata.from_drive(drive_file, "school", EXT_WHITELIST, GOOGLE_MIME_EXPORT)
     assert meta.web_view_link is None
+
+
+# ---------------------------------------------------------
+# purge_source_from_index — logout cleans up index
+# ---------------------------------------------------------
+
+def test_purge_source_removes_only_matching_entries(tmp_path, monkeypatch):
+    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
+
+    from declutter_bot.core.index_manager import save_index, load_index
+
+    index = {
+        "gdrive:personal/file1": {"source": "gdrive:personal", "name": "a.pdf"},
+        "gdrive:personal/file2": {"source": "gdrive:personal", "name": "b.pdf"},
+        "gdrive:school/file3":   {"source": "gdrive:school",   "name": "c.pdf"},
+        "/local/file4.pdf":      {"source": "local",           "name": "d.pdf"},
+    }
+    save_index(index)
+
+    removed = purge_source_from_index("gdrive:personal")
+
+    assert removed == 2
+    remaining = load_index()
+    assert "gdrive:personal/file1" not in remaining
+    assert "gdrive:personal/file2" not in remaining
+    assert "gdrive:school/file3" in remaining
+    assert "/local/file4.pdf" in remaining
+
+
+def test_purge_source_returns_zero_when_no_match(tmp_path, monkeypatch):
+    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
+
+    from declutter_bot.core.index_manager import save_index
+
+    save_index({"/local/file.pdf": {"source": "local", "name": "file.pdf"}})
+
+    removed = purge_source_from_index("gdrive:personal")
+    assert removed == 0
+
+
+def test_purge_source_handles_empty_index(tmp_path, monkeypatch):
+    monkeypatch.setattr("declutter_bot.core.index_manager.INDEX_PATH", tmp_path / "index.json")
+
+    removed = purge_source_from_index("gdrive:personal")
+    assert removed == 0
 
 
 def test_merge_scans_stores_web_view_link():

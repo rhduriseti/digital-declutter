@@ -2,7 +2,7 @@ from pathlib import Path
 
 from declutter_bot.connectors.base import SourceConnector
 from declutter_bot.core.file_metadata import FileMetadata
-from declutter_bot.core.paths import DRIVE_ACCOUNTS_DIR, GOOGLE_CREDENTIALS_PATH
+from declutter_bot.core.paths import DRIVE_ACCOUNTS_DIR, GOOGLE_CREDENTIALS_PATH, GOOGLE_WEB_CREDENTIALS_PATH
 
 # drive.readonly — non-sensitive scope, easier Google verification
 # Full drive scope added later once verified, UI doesn't change
@@ -54,6 +54,55 @@ class GoogleDriveConnector(SourceConnector):
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
+
+    @classmethod
+    def build_auth_url(cls, redirect_uri: str, state: str) -> str:
+        """
+        Build the Google OAuth2 authorization URL for the web flow.
+        The caller must open this URL in the browser.
+        """
+        from google_auth_oauthlib.flow import Flow
+
+        if not GOOGLE_WEB_CREDENTIALS_PATH.exists():
+            raise FileNotFoundError(
+                f"Web credentials not found at {GOOGLE_WEB_CREDENTIALS_PATH}.\n"
+                "Place credentials_web.json (Web application type) in ~/.declutter/."
+            )
+
+        flow = Flow.from_client_secrets_file(
+            str(GOOGLE_WEB_CREDENTIALS_PATH),
+            scopes=SCOPES,
+            redirect_uri=redirect_uri,
+        )
+        # Disable PKCE — requests-oauthlib 2.0 adds it automatically but
+        # Google rejects it unless the client is explicitly configured for PKCE
+        flow.oauth2session._client.code_challenge_method = None
+        auth_url, _ = flow.authorization_url(
+            access_type="offline",
+            state=state,
+            prompt="consent",
+            code_challenge=None,
+            code_challenge_method=None,
+        )
+        return auth_url
+
+    @classmethod
+    def exchange_code(cls, account_name: str, code: str, redirect_uri: str) -> "GoogleDriveConnector":
+        """
+        Exchange an OAuth2 authorization code for a token and save it.
+        Called by the API callback endpoint after Google redirects back.
+        """
+        from google_auth_oauthlib.flow import Flow
+
+        flow = Flow.from_client_secrets_file(
+            str(GOOGLE_WEB_CREDENTIALS_PATH),
+            scopes=SCOPES,
+            redirect_uri=redirect_uri,
+        )
+        flow.fetch_token(code=code)
+        connector = cls(account_name)
+        connector._save_token(flow.credentials)
+        return connector
 
     @classmethod
     def login(cls, account_name: str) -> "GoogleDriveConnector":
@@ -164,7 +213,10 @@ class GoogleDriveConnector(SourceConnector):
             return []
         return [p.stem for p in DRIVE_ACCOUNTS_DIR.glob("*.json")]
 
-    def logout(self):
-        """Remove the saved token for this account."""
+    def logout(self) -> int:
+        """Remove the saved token and purge all index entries for this account.
+        Returns the number of index entries removed."""
+        from declutter_bot.core.index_manager import purge_source_from_index
         if self.token_path.exists():
             self.token_path.unlink()
+        return purge_source_from_index(self.source_id)

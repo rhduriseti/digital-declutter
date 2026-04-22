@@ -5,7 +5,10 @@ description = "Declutter CLI"
 requires-python = ">=3.9"
 dependencies = [
     "rich",
+    "fastapi",
+    "uvicorn[standard]",
 ]
 
 [project.scripts]
 declutter = "declutter_bot.cli.main:main"
+declutter-api = "declutter_bot.api.app:main"

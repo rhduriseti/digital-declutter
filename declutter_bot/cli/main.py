@@ -659,8 +659,10 @@ def main():
     if args.command == "drive-logout":
         connector = GoogleDriveConnector(args.account_name)
         if connector.token_path.exists():
-            connector.logout()
+            purged = connector.logout()
             console.print(f"[green]Disconnected:[/green] {args.account_name}")
+            if purged > 0:
+                console.print(f"[yellow]Removed {purged} index entries for {args.account_name}.[/yellow]")
         else:
             console.print(f"[yellow]No account found with name:[/yellow] {args.account_name}")
         return
