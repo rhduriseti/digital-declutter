@@ -312,54 +312,138 @@ Both local and Drive entries are logged in `staging_log.json` with a `source` fi
 
 ## 8. Subject Classification Pipeline
 
-Five steps, run in order, stop at first match:
+Three groups run in order. Each group only runs if the previous group did not reach high confidence.
 
-| Step | Method | File |
-|------|--------|------|
-| 1 | Folder name keywords | `subject_classifier.py` |
-| 2 | Filename keywords | `subject_classifier.py` |
-| 3 | Seed map (15 subjects, ~200 keywords) | `utils.py` + `subject_classifier.py` |
-| 4 | Expanded map (AI-learned keywords) | `subject_classifier.py` |
-| 5 | Ollama local AI fallback (gemma3:4b) | `subject_classifier.py` |
+---
 
-- Subject list in Ollama prompt is derived from `SEED_MAP.keys()` — stays in sync automatically
-- When Ollama classifies with confidence ≥ 0.85, new keywords are saved to `expanded_map.json`
-- `expanded_map.json` grows over time, reducing AI calls
+### Group A — Metadata only (always runs, no file read)
 
-### Planned: Multimodal classification (images + videos)
-Current pipeline (steps 1-5) is text-only — classifies from filename and path only. Gemma/Ollama cannot read image or video content.
+Scores folder names + filename against the seed map and expanded map.
 
-**Images:**
-- Local option: `ollama pull llava` — free, runs offline on Mac, handles images natively
-- Cloud option: Claude API (claude-sonnet-4-6) — most accurate, costs per call
-- Approach: pass image file directly to model → "what school subject is this related to?"
+```
+score_text(folder_names + filename) → {subject: score}
+confidence = winner_score / total_score
+```
 
-**Videos:**
-- Extract a few frames using `ffmpeg` (free, runs locally): `ffmpeg -i video.mp4 -vf fps=1/10 frame_%03d.jpg`
-- Pass frames to LLaVA (local) or Gemini 1.5 Pro (best for video, Google API)
-- Don't need to analyse full video — 3-5 frames enough to classify subject
+**Scoring rules:**
+- Multi-word phrase match (e.g. "climate change") → 2 points
+- Single-word keyword match (e.g. "biology") → 1 point
+- Each unique keyword capped at 3 points (prevents repetition bias)
+- Tied scores → confidence capped at 0.3 → next group runs
 
-**Build order:**
-1. Add `"science"` as catch-all subject in SEED_MAP (immediate, covers "Science Project 2.mp4" type filenames)
-2. LLaVA via Ollama for image classification (Phase 2 — already have Ollama)
-3. Video frame extraction + classification (Phase 2 — needs `ffmpeg`)
-4. Gemini 1.5 Pro for full video understanding (Phase 3 — paid API)
+**Thresholds:**
+```
+confidence ≥ 0.7  → done (high confidence)
+confidence ≥ 0.4  → try Group B
+confidence < 0.4  → skip to Group C
+scores all zero   → skip to Group C
+```
 
-**Why:** High school students commonly have photos of whiteboards, screenshots of slides, and recorded lab videos — all currently fall back to `image` or `video` category instead of their subject.
+**Drive files:** path is an opaque file ID — the actual filename from the index entry is used instead.
 
-### Performance: incremental categorisation (implemented 2026-04-13)
+---
+
+### Group B — Content keyword scan (local text files + Drive files)
+
+Reads first 500 chars → scores against seed map + expanded map.
+If 0.4 ≤ confidence < 0.7 → tries 2000 chars.
+
+```
+score_text(first 500 chars) → confidence
+  ≥ 0.7 → done
+  ≥ 0.4 → try 2000 chars → done if ≥ 0.4
+  < 0.4 → Group C
+```
+
+**Local files:** reads directly from disk into memory.
+
+**Drive files:** downloads first 2000 chars transiently via Drive API into memory (never written to disk):
+- Google Workspace files (Docs, Slides) → exported as `text/plain`
+- Regular files (PDF, DOCX, TXT) → downloaded as binary, decoded as UTF-8
+
+**Privacy:** Drive content is never stored, logged, or sent to any third party. It exists in process memory only for the duration of classification, then is discarded.
+
+**Skipped for:** media files (.jpg, .mp4, .mp3, etc.) — content reading has no value.
+
+---
+
+### Group C — Semantic similarity via sentence-transformers
+
+Runs when Groups A and B both fail to reach medium confidence.
+Uses `all-MiniLM-L6-v2` to compute cosine similarity between file content and subject descriptions built from the seed map keywords.
+
+```
+text_embedding ←→ subject_description_embeddings
+→ picks subject with highest cosine similarity
+→ always returns a subject (never falls through)
+→ saves new keywords to expanded map if confidence > 0.5
+```
+
+**Local files:** reads first 2000 chars from disk.
+**Drive files:** same transiently downloaded content as Group B.
+**Media files:** skipped (no text content).
+
+Model is loaded once and cached for the session — first call takes ~5–10 seconds.
+
+---
+
+### Ollama fallback (when sentence-transformers unavailable)
+
+If `sentence-transformers` is not installed, Ollama (gemma3:4b) is used as Group C fallback.
+Skipped for media files. When Ollama classifies with confidence ≥ 0.85, new keywords are saved to the expanded map.
+
+---
+
+### Final fallback — extension map
+
+If all groups fail (empty content, media file, connection error), the file falls back to the extension-based `CATEGORY_MAP` in `utils.py`:
+`.pdf → documents`, `.jpg → images`, `.mp4 → videos`, etc.
+
+---
+
+### What is stored in the index per file
+
+| Field | Description |
+|-------|-------------|
+| `category` | Classified subject (e.g. "biology", "math") |
+| `confidence_score` | 0.0–1.0 ratio from scoring (0.0 for Group C/Ollama) |
+| `classification_group` | Which group classified it: "A", "B", "C", "ollama", "fallback" |
+| `manually_set` | `true` if student corrected — pipeline never overwrites this |
+| `categorised_modified_at` | Timestamp when last categorised — used to skip unchanged files |
+
+---
+
+### Category sources
+
+| Source | Description |
+|--------|-------------|
+| **Seed map** (`utils.py`) | ~20 subjects, ~300 keywords. Fixed. Your daughter maintains this. |
+| **Expanded map** (`~/.declutter/*_expanded_map.json`) | Auto-learned keywords from Groups C and Ollama. Grows over time. One file per source. |
+| **Personal categories** (V2) | Student-created categories (e.g. "AP Literature", "Drama"). Stored in Drive appdata. |
+
+---
+
+### Incremental categorisation
+
 Files are only re-categorised when necessary:
 
 | Condition | Action |
 |-----------|--------|
+| `manually_set = true` | Never reclassify — student's choice is permanent |
 | `category` set + `modified_at` unchanged | Skip — reuse existing category |
-| `category` set + `modified_at` changed | Re-categorise — filename/folder may have changed |
+| `category` set + `modified_at` changed | Re-categorise — file may have changed |
 | No `category` (new file) | Categorise and store result |
-| Old index entry (no `categorised_modified_at`) | Treat as unchanged — backward compatible |
 
-- `categorised_modified_at` stored alongside `category` in the index
-- Progress bar shows only the count of files actually being categorised, not full index size
-- **Why:** Subject classification runs up to 5 pipeline steps including a local AI call (Ollama) — skipping unchanged files makes rescans fast
+---
+
+### Planned: Multimodal classification (Tier 2)
+
+Current pipeline is text-only. Images and video fall back to the extension map.
+
+| Type | Plan |
+|------|------|
+| Images | LLaVA via Ollama (free, local) or Claude API |
+| Video | Extract 3–5 frames with `ffmpeg`, pass to LLaVA or Gemini |
 
 ---
 
@@ -433,11 +517,14 @@ MD5 computation is incremental — local files are only read from disk when new 
 
 | File | Contents |
 |------|----------|
-| `index.json` | All scanned files across all sources |
+| `local_index.json` | Index of local files |
+| `gdrive_<name>_index.json` | Index per connected Drive account |
+| `local_expanded_map.json` | AI-learned keywords for local files |
+| `gdrive_<name>_expanded_map.json` | AI-learned keywords per Drive account |
 | `blacklist.json` | Folders excluded from scanning |
-| `staging_log.json` | Soft-deleted files (local + Drive) |
-| `expanded_map.json` | AI-learned keyword → subject mappings |
-| `credentials.json` | Google app credentials (never committed) |
+| `staging_log.json` | Soft-deleted local files |
+| `credentials.json` | Google OAuth credentials for CLI (Desktop app type, never committed) |
+| `credentials_web.json` | Google OAuth credentials for API (Web app type, never committed) |
 | `drive_accounts/<name>.json` | Per-account OAuth tokens |
 
 **Planned: SQLite migration (before cloud sync)**
@@ -540,43 +627,37 @@ Until the UI is built, the CLI renders this as a Rich table via `declutter repor
 
 ---
 
-## 12. Gmail Integration (Planned)
+## 12. Gmail Integration (Tier 3)
 
-Gmail is the natural next source after Drive — students receive assignments, feedback, and resources via email.
+Gmail integration is intentionally deferred to Tier 3 — not a cleanup tool, but an AI reasoning layer.
 
-### What Gmail integration adds
-- Large attachments (>5MB) — identified without downloading
-- Duplicate attachments across emails — same file sent multiple times
-- Old newsletters and bulk mail flagged for cleanup
-- Attachments pulled into the unified index for cross-source deduplication
+### What Gmail adds in Tier 3 (not cleanup)
+- "What's due this week?" → scans Gmail + Google Calendar for deadlines
+- "What did my teacher say about the history project?" → searches email threads by subject
+- "Summarise all feedback I've received this semester" → reads assignment return emails
+- Connects email context to Drive files — "the file my teacher mentioned in this email"
 
-### Gmail API scope
-- `gmail.readonly` — non-sensitive, same verification path as `drive.readonly`
-- Metadata-only scan: sender, subject, date, attachment name + size
-- Content/body never read — privacy by design
+### Why not Tier 1/2
+- Students don't feel email storage pain — school Gmail limits are generous
+- Large attachment cleanup has low value for a 15-year-old
+- Gmail's real value is **reasoning**, not **cleanup** — that needs the AI layer
 
-### How it fits the connector architecture
+### APIs needed
+- `gmail.readonly` — read email threads and metadata
+- Google Calendar API — deadlines, reminders, assignment due dates
+- Claude API — reason across threads, summarise, extract deadlines
+
+### Architecture (Tier 3)
 ```python
 # connectors/gmail.py — implements SourceConnector
 class GmailConnector(SourceConnector):
-    source_id = "gmail:school"  # or "gmail:personal"
-    def scan() -> list[FileMetadata]  # attachments as FileMetadata
+    source_id = "gmail:school"
+    def scan() -> list[FileMetadata]  # email threads as structured data
 ```
-
-- Same `drive-login`-style auth: `declutter gmail-login school`
+- Same OAuth pattern as Drive: `declutter gmail-login school`
 - Token stored at `~/.declutter/gmail_accounts/school.json`
-- Attachments appear in the unified index with `source: "gmail:school"`
-- Subject classifier runs on attachment filenames — same pipeline
-
-### What shows in the UI
-```
-┌──────────────┬──────────────┬──────────────────┐
-│  My Computer │ School Drive │  School Gmail    │
-│              │              │                  │
-│ Biology  12  │ Biology   8  │  Biology      4  │  ← email attachments
-│ Math      7  │ Math      5  │  Math         2  │
-└──────────────┴──────────────┴──────────────────┘
-```
+- Email threads indexed alongside files — same unified index
+- Claude API reasons across Gmail + Drive + local files together
 
 ---
 
@@ -597,8 +678,8 @@ The product naturally grows into three tiers. Each tier is a complete product �
 | MD5 duplicate detection | ✅ Built |
 | Staging / safe delete (local) | ✅ Built |
 | Google Drive scan (readonly) | ✅ Built |
-| Unified organised view (app-only) | Planned |
-| Gmail attachments scan | Planned |
+| Incremental categorisation + MD5 | ✅ Built |
+| Organised view CLI (report --organised) | ✅ Built |
 | FastAPI layer | Planned |
 | Streamlit UI | Planned |
 | SQLite migration | Planned |
@@ -607,70 +688,91 @@ The product naturally grows into three tiers. Each tier is a complete product �
 
 ---
 
-### Tier 2 — Smart File Assistant
-**Target:** Students who want more than organisation
-**Value:** Finds things, summarises things, spots patterns
+### Tier 2 — AI Study Assistant (Premium Subscription)
+**Target:** Students serious about academic performance, parents who want their kids to do well
+**Value:** AI that knows your entire school life, helps you study, and keeps you on top of deadlines
 
-| Feature | Notes |
-|---------|-------|
-| Near-duplicate detection (Level 2-3) | Text extraction + simhash |
-| Semantic search | "Show my biology notes from last month" |
-| File summarisation | "Summarise this PDF" via local Ollama |
-| Subject tutor | Quiz student from their own notes |
-| Cross-source search | One search across local + Drive + Gmail |
-
-**LLM role:** Local Ollama (already integrated) handles summarisation and search. Claude API for higher quality when online.
-
----
-
-### Tier 3 — Personal Digital Brain (Premium)
-**Target:** Power users, students serious about academic performance
-**Value:** AI that knows your entire digital life and reasons across it
-
-This is where the LLM becomes essential — not optional:
+Two tiers, clean story:
+- **Tier 1 (free/school IT):** organise, deduplicate, clean up — Drive + local
+- **Tier 2 (subscription):** AI study assistant — organise + understand + help me learn
 
 | Feature | What it does |
 |---------|-------------|
-| **Semantic search** | Find files by meaning, not just filename |
-| **Embeddings** | Every file vectorised — similarity search across thousands of docs |
-| **Memory graph** | Connections between files, topics, people, dates |
-| **Gmail + Drive reasoning** | "What did my teacher send me about the biology project?" spans email + Drive |
-| **Multi-step agent workflows** | "Prepare me for tomorrow's exam" → finds notes + summarises + creates quiz |
-| **Summarisation** | Any file or email thread summarised on demand |
-| **Clustering** | Automatically groups related files across subjects and sources |
-| **Timeline building** | "Show everything related to my history essay" in chronological order |
+| **Near-duplicate detection** | Catches essay_v1 vs essay_v2, PDF export of a Word doc |
+| **Image classification** | Photos of whiteboards, screenshots of slides → correct subject via LLaVA |
+| **Video classification** | Frame extraction + AI → "Science Project.mp4" → correct subject |
+| **Semantic search** | "Show my biology notes from last month" — finds by meaning not filename |
+| **File summarisation** | Any PDF or doc summarised on demand via Claude API |
+| **Subject tutor** | Quizzes student from their own notes — "test me on chapter 3" |
+| **Gmail integration** | School communication, teacher feedback, assignment returns |
+| **Google Calendar** | Due dates and reminders connected to files and subjects |
+| **Memory graph** | Connections between files, emails, topics, deadlines, people |
+| **Multi-step agent** | "Prepare me for tomorrow's exam" → finds notes + summarises + creates quiz |
+| **Timeline builder** | "Show everything related to my history essay" chronologically |
+| **Chat interface** | Natural language across all features — Ronit owns this module |
 
-**Architecture requirements for Tier 3:**
-- SQLite → vector database (pgvector or ChromaDB) for embedding storage
+**Architecture requirements:**
+- SQLite → vector database (pgvector or ChromaDB) for embeddings
 - Background embedding pipeline — files embedded as they are indexed
-- Memory graph (nodes = files/people/topics, edges = relationships)
-- Claude API for reasoning, Ollama for local embedding generation
+- Memory graph (nodes = files/emails/deadlines, edges = relationships)
+- Claude API for reasoning and summarisation
+- Ollama for local embedding generation (free, offline)
 - Multi-step agent via Claude Agent SDK
+- Gmail API + Google Calendar API
 
-**Why this is the premium product:**
-- Requires always-on API connection (Claude API cost)
-- Embedding pipeline needs compute
-- The value compounds over time — the longer a student uses it, the smarter it gets
-- No other tool connects Gmail + Drive + local files into a single reasoning layer for students
+### Two views in Tier 2
 
-**Pricing model:** Subscription — API costs are real and scale with usage
+**Student view:**
+- Files organised by subject across local + Drive
+- Duplicates flagged, space savings shown
+- "Help me study" — summarise notes, quiz me, semantic search
+- "What's due this week?" — deadlines from Gmail + Google Calendar
+- Chat interface for all of the above
+
+**Teacher view:**
+- All student submissions organised by assignment
+- Spot missing submissions at a glance
+- Flag duplicate submissions — academic integrity check
+- "Summarise feedback I've given this semester"
+- Assignment timeline — who submitted what and when
+
+**Teacher AI assistant (from their own content):**
+- "Generate a quiz from my chapter 3 notes" → pulls teacher's own Drive files
+- "Summarise last year's exam papers" → finds and summarises past papers
+- "Create an assignment brief based on my lesson plan" → drafts from existing content
+- "What topics haven't I covered yet this term?" → reasons across lesson plans + calendar
+- Years of accumulated content (past papers, rubrics, lesson plans) finally becomes searchable and useful
+
+**Why the teacher view matters for sales:**
+- Schools buy tools that help teachers, not just students
+- Academic integrity (duplicate detection) is a real pain point for schools
+- Teacher view turns Claire from a student tool into an institutional product
+- One school licence covers all students + all teachers → higher contract value
+
+**Why students and parents pay for this:**
+- Saves hours of study prep — AI does the organising, student does the learning
+- The value compounds — the longer they use it, the smarter it gets about their subjects
+- No other tool connects Gmail + Drive + Calendar + local files into one study layer
+- Parents see grades improve → retention is high
+
+**Pricing model:** Monthly subscription — Claude API costs scale with usage
 
 ---
 
 ## 14. Chat Interface
 
-Natural language wrapper around existing tools — entry point to Tier 2/3:
+Natural language wrapper around existing tools — the face of Tier 2:
 
 - "What are my largest biology files?" → calls search + report
 - "Show duplicates in my school Drive" → calls detect_duplicates filtered by source
-- "Summarise my chemistry notes from this week" → Tier 2 summarisation
-- "What did my teacher email me about the history project?" → Tier 3 Gmail + Drive reasoning
-- Long term: subject tutor that quizzes students from their own notes
+- "Summarise my chemistry notes from this week" → file summarisation via Claude API
+- "What did my teacher email me about the history project?" → Gmail + Drive reasoning
+- "Test me on chapter 3 of my biology notes" → subject tutor
+- "What's due this week?" → Google Calendar + Gmail deadlines
 
 **Build path:**
-- Tier 1 chat: route natural language to CLI commands (Claude API, simple)
-- Tier 2 chat: semantic search + summarisation responses
-- Tier 3 chat: full agent with memory graph and multi-source reasoning
+- Tier 1: no chat needed — UI buttons are enough for organise/clean up
+- Tier 2: full chat interface — Claude API routes natural language to the right tool
 
 Good module for Ronit to own — conversational UI is UX work, business logic stays in tools/
 
@@ -678,30 +780,31 @@ Good module for Ronit to own — conversational UI is UX work, business logic st
 
 ## 15. Build Order
 
-**Phase 1 — Tier 1 complete (current focus)**
+**Phase 1 — Tier 1 (current focus)**
 1. ~~Subject classification pipeline~~ ✅
 2. ~~Connector architecture + Google Drive connector~~ ✅
 3. ~~Multi-source index (source, md5, webViewLink)~~ ✅
 4. ~~CLI --source flag + drive-login/logout/accounts~~ ✅
 5. ~~Progress bars for all pipeline steps~~ ✅
-6. Test with real Drive credentials
-7. FastAPI layer
-8. Streamlit UI (two-panel organised view)
-9. SQLite migration
-10. Gmail integration
+6. ~~Incremental categorisation + MD5 computation~~ ✅
+7. ~~Organised view CLI (report --organised)~~ ✅
+8. Test with real student Drive accounts
+9. FastAPI layer
+10. Streamlit UI (two-panel organised view)
+11. SQLite migration
 
-**Phase 2 — Tier 2**
-11. Near-duplicate detection (Levels 2-3)
-12. Semantic search
-13. File summarisation via Ollama
-14. Subject tutor / quiz mode
-15. Tier 2 chat interface
-
-**Phase 3 — Tier 3 (Premium)**
-16. Vector database (ChromaDB or pgvector)
-17. Background embedding pipeline
-18. Memory graph
-19. Gmail + Drive cross-source reasoning
-20. Multi-step agent workflows (Claude Agent SDK)
-21. Timeline builder
-22. Tier 3 chat interface + subscription billing
+**Phase 2 — Tier 2 (AI Study Assistant)**
+12. Near-duplicate detection (Levels 2-3)
+13. Image classification via LLaVA (Ollama)
+14. Video frame extraction + classification (ffmpeg)
+15. Semantic search via embeddings
+16. File summarisation via Claude API
+17. Subject tutor / quiz mode
+18. Gmail integration — school communication + teacher feedback
+19. Google Calendar — deadlines connected to files and subjects
+20. Vector database (ChromaDB or pgvector)
+21. Memory graph (files + emails + deadlines)
+22. Multi-step agent workflows (Claude Agent SDK)
+23. Timeline builder
+24. Chat interface (Ronit owns this)
+25. Subscription billing
