@@ -7,6 +7,9 @@ from declutter_bot.tools.subject_classifier import (
     classify_group_c,
     classify_by_ollama_ai,
     _read_file_text,
+    score_text,
+    confidence_from_scores,
+    load_expanded_map,
 )
 
 # Extensions where content reading adds value
@@ -32,9 +35,12 @@ def categorize_files(index: dict) -> dict:
     Categorise every file in the index using the 3-group pipeline.
 
     Group A — metadata only (folder + filename keywords). Fast, no file read.
-    Group B — content keyword scan (500 then 2000 chars). Local text files only.
+    Group B — content keyword scan (500 then 2000 chars).
     Group C — sentence-transformers semantic similarity. Always returns a subject.
     Ollama  — fallback if sentence-transformers not installed.
+
+    For Drive files, content is downloaded transiently into memory for Groups B/C.
+    It is never written to disk or sent to any third party.
 
     Rules:
     - Skip entries where manually_set=True (student's choice is permanent)
@@ -44,6 +50,7 @@ def categorize_files(index: dict) -> dict:
     updated_index = {}
     _st_available = True
     _ollama_available = True
+    _drive_connectors: dict = {}
 
     for path, entry in index.items():
         # Never reclassify student corrections
@@ -60,45 +67,62 @@ def categorize_files(index: dict) -> dict:
         ext = entry.get("extension", "").lower()
         source = entry.get("source", "local")
         is_local = source == "local"
-        can_read = is_local and ext in CONTENT_READABLE_EXTENSIONS
+        is_drive = source.startswith("gdrive:")
+        can_read_local = is_local and ext in CONTENT_READABLE_EXTENSIONS
+        can_read_drive = is_drive and ext in CONTENT_READABLE_EXTENSIONS
 
         subject = None
         confidence = 0.0
         group = "fallback"
 
         # --- Group A: metadata scoring ---
-        a_subject, a_confidence = classify_group_a(path)
+        # Drive paths are opaque IDs — use actual filename from index entry
+        display_name = entry.get("name") if is_drive else None
+        a_subject, a_confidence = classify_group_a(path, display_name)
 
         if a_confidence >= HIGH_CONFIDENCE:
             subject, confidence, group = a_subject, a_confidence, "A"
 
-        elif a_confidence >= MED_CONFIDENCE and can_read:
-            # --- Group B: content 500 chars ---
+        elif can_read_local and a_confidence >= MED_CONFIDENCE:
+            # --- Group B (local): keyword scan on 500 then 2000 chars ---
             b_subject, b_confidence = classify_group_b(path, 500)
             if b_confidence >= HIGH_CONFIDENCE:
                 subject, confidence, group = b_subject, b_confidence, "B"
             elif b_confidence >= MED_CONFIDENCE:
-                # Try 2000 chars
                 b2_subject, b2_confidence = classify_group_b(path, 2000)
                 if b2_confidence >= MED_CONFIDENCE:
                     subject, confidence, group = b2_subject, b2_confidence, "B"
 
+        # --- Group B (Drive): download content into memory, keyword scan ---
+        if group == "fallback" and can_read_drive:
+            drive_text = _get_drive_text(path, entry, source, _drive_connectors)
+            if drive_text.strip():
+                expanded = load_expanded_map()
+                scores = score_text(drive_text, expanded)
+                b_subject, b_confidence = confidence_from_scores(scores)
+                if b_confidence >= MED_CONFIDENCE:
+                    subject, confidence, group = b_subject, b_confidence, "B"
+
         # --- Group C: semantic similarity ---
-        if group == "fallback" and can_read and _st_available:
-            try:
+        if group == "fallback" and _st_available:
+            text = ""
+            if can_read_local:
                 text = _read_file_text(path, 2000)
-                if text.strip():
+            elif can_read_drive:
+                text = _get_drive_text(path, entry, source, _drive_connectors)
+            if text.strip():
+                try:
                     c_subject, c_confidence = classify_group_c(text)
                     subject, confidence, group = c_subject, c_confidence, "C"
-            except ImportError:
-                _st_available = False
-                warnings.warn(
-                    "sentence-transformers not installed — Group C skipped. "
-                    "Install with: pip install sentence-transformers",
-                    stacklevel=2,
-                )
-            except Exception:
-                _st_available = False
+                except ImportError:
+                    _st_available = False
+                    warnings.warn(
+                        "sentence-transformers not installed — Group C skipped. "
+                        "Install with: pip install sentence-transformers",
+                        stacklevel=2,
+                    )
+                except Exception:
+                    _st_available = False
 
         # --- Ollama fallback (when sentence-transformers unavailable) ---
         if group == "fallback" and ext not in MEDIA_EXTENSIONS and _ollama_available:
@@ -127,3 +151,17 @@ def categorize_files(index: dict) -> dict:
         }
 
     return updated_index
+
+
+def _get_drive_text(path: str, entry: dict, source: str, connectors: dict) -> str:
+    """Download Drive file content into memory. Returns empty string on failure."""
+    try:
+        account_name = source.split(":", 1)[1]
+        file_id = path.rsplit("/", 1)[-1]
+        mime_type = entry.get("mime_type")
+        if account_name not in connectors:
+            from declutter_bot.connectors.gdrive import GoogleDriveConnector
+            connectors[account_name] = GoogleDriveConnector(account_name)
+        return connectors[account_name].get_file_text(file_id, mime_type, max_chars=2000)
+    except Exception:
+        return ""

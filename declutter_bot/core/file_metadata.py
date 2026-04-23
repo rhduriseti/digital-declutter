@@ -13,6 +13,7 @@ class FileMetadata:
     source: str = "local"
     md5: str | None = None
     web_view_link: str | None = None
+    mime_type: str | None = None
     category: str | None = None
     duplicate_of: str | None = None
 
@@ -59,4 +60,5 @@ class FileMetadata:
             source=f"gdrive:{account_name}",
             md5=drive_file.get("md5Checksum"),
             web_view_link=drive_file.get("webViewLink"),
+            mime_type=mime,
         )

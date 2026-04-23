@@ -131,9 +131,12 @@ def _metadata_text(file_path: str) -> str:
 # Group A — metadata only (folder + filename keywords)
 # ---------------------------------------------------------
 
-def classify_group_a(file_path: str) -> tuple[str | None, float]:
-    """Score folder names + filename against SEED_MAP and expanded map."""
-    text = _metadata_text(file_path)
+def classify_group_a(file_path: str, display_name: str | None = None) -> tuple[str | None, float]:
+    """
+    Score folder names + filename against SEED_MAP and expanded map.
+    Pass display_name for Drive files where file_path is an opaque ID.
+    """
+    text = display_name if display_name else _metadata_text(file_path)
     expanded = load_expanded_map()
     scores = score_text(text, expanded)
     return confidence_from_scores(scores)

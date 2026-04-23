@@ -127,6 +127,6 @@ Ollama tests are skipped automatically if the Ollama server is not running. All 
 - **Logout preserves the index** — only the OAuth token is deleted. Reconnecting restores the account without rescanning.
 - **Blacklist vs untrack** — blacklist permanently blocks a folder from future scans; untrack just removes its current entries (folder can be scanned again later).
 - **Drive files are never deleted by the app** — only local files can be moved to staging or permanently deleted. Drive duplicates show a link to delete manually.
-- **Privacy first** — file content never leaves the device for categorisation. Only filenames and metadata are used.
+- **Privacy first** — local file content never leaves the device. For Google Drive files, content is downloaded transiently into memory for classification and discarded immediately — never stored on disk or sent to any third party.
 
 For full architecture details see [ARCHITECTURE.md](ARCHITECTURE.md).

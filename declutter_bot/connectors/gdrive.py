@@ -213,6 +213,44 @@ class GoogleDriveConnector(SourceConnector):
             return []
         return [p.stem for p in DRIVE_ACCOUNTS_DIR.glob("*.json")]
 
+    def get_file_text(self, file_id: str, mime_type: str | None, max_chars: int = 2000) -> str:
+        """
+        Download the first max_chars of a Drive file as plain text into memory.
+        Content is never written to disk and is discarded immediately after classification.
+
+        PRIVACY NOTE: file content transiently passes through this process for
+        classification only. It is never stored, logged, or sent to any third party.
+        """
+        service = self._get_service()
+
+        # Google Workspace files (Docs, Slides) must be exported to plain text
+        if mime_type and mime_type.startswith("application/vnd.google-apps"):
+            try:
+                data = service.files().export(
+                    fileId=file_id, mimeType="text/plain"
+                ).execute()
+                text = data.decode("utf-8", errors="ignore") if isinstance(data, bytes) else str(data)
+                return text[:max_chars]
+            except Exception:
+                return ""
+
+        # Regular files — download binary into memory buffer, decode as text
+        try:
+            from googleapiclient.http import MediaIoBaseDownload
+            import io
+            request = service.files().get_media(fileId=file_id)
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(buf, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+                if buf.tell() >= max_chars * 4:
+                    break
+            buf.seek(0)
+            return buf.read(max_chars * 4).decode("utf-8", errors="ignore")[:max_chars]
+        except Exception:
+            return ""
+
     def logout(self):
         """Remove the saved token. Index is kept so reconnecting restores without rescan."""
         if self.token_path.exists():
