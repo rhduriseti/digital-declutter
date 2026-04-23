@@ -109,6 +109,9 @@ def merge_scans(existing_index: Dict[str, dict],
                 "md5": new_item.md5,
                 "web_view_link": new_item.web_view_link,
                 "category": old_entry.get("category"),
+                "manually_set": old_entry.get("manually_set", False),
+                "confidence_score": old_entry.get("confidence_score"),
+                "classification_group": old_entry.get("classification_group"),
                 "duplicate_of": old_entry.get("duplicate_of"),
             }
         else:
@@ -129,6 +132,9 @@ def merge_scans(existing_index: Dict[str, dict],
                 "md5": item.md5,
                 "web_view_link": item.web_view_link,
                 "category": None,
+                "manually_set": False,
+                "confidence_score": None,
+                "classification_group": None,
                 "duplicate_of": None,
             }
 

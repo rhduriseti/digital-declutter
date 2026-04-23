@@ -1,64 +1,129 @@
-from declutter_bot.core.utils import CATEGORY_MAP
-from declutter_bot.tools.subject_classifier import classify_subject, classify_by_ollama_ai
+import warnings
 
-# Extensions where Ollama adds no value — filename alone isn't enough to classify
-# and multimodal support (LLaVA, Gemini) is planned for Tier 2
-OLLAMA_SKIP_EXTENSIONS = {
-    ".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp", ".webp",  # images
-    ".mp4", ".mov", ".avi", ".mkv", ".wmv",                     # video
-    ".mp3", ".wav", ".aac", ".flac",                            # audio
+from declutter_bot.core.utils import CATEGORY_MAP
+from declutter_bot.tools.subject_classifier import (
+    classify_group_a,
+    classify_group_b,
+    classify_group_c,
+    classify_by_ollama_ai,
+    _read_file_text,
+)
+
+# Extensions where content reading adds value
+CONTENT_READABLE_EXTENSIONS = {
+    ".txt", ".md", ".pdf", ".doc", ".docx", ".rtf",
+    ".ppt", ".pptx", ".html", ".htm", ".csv",
 }
+
+# Extensions where content reading has no value (media)
+MEDIA_EXTENSIONS = {
+    ".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp", ".webp",
+    ".mp4", ".mov", ".avi", ".mkv", ".wmv",
+    ".mp3", ".wav", ".aac", ".flac",
+}
+
+# Thresholds
+HIGH_CONFIDENCE = 0.7
+MED_CONFIDENCE = 0.4
 
 
 def categorize_files(index: dict) -> dict:
     """
-    Add a 'category' field to each file entry in the index.
+    Categorise every file in the index using the 3-group pipeline.
+
+    Group A — metadata only (folder + filename keywords). Fast, no file read.
+    Group B — content keyword scan (500 then 2000 chars). Local text files only.
+    Group C — sentence-transformers semantic similarity. Always returns a subject.
+    Ollama  — fallback if sentence-transformers not installed.
 
     Rules:
-    1. Skip if already categorised AND modified_at hasn't changed (filename/folder unchanged)
-    2. Run subject classifier (steps 1-4) — returns subject if found
-    3. Step 5: Ollama AI — only for text-based file types (skip media files)
-    4. Fall back to extension-based CATEGORY_MAP
-    5. If nothing matches → "other"
-
-    Stores 'categorised_modified_at' alongside 'category' so future runs can detect
-    whether the file changed since it was last categorised.
+    - Skip entries where manually_set=True (student's choice is permanent)
+    - Skip entries where category exists and file is unchanged since last categorisation
+    - Store confidence_score and classification_group alongside category
     """
-
     updated_index = {}
+    _st_available = True
     _ollama_available = True
 
     for path, entry in index.items():
-        current_modified = entry.get("modified_at")
+        # Never reclassify student corrections
+        if entry.get("manually_set"):
+            updated_index[path] = entry
+            continue
 
-        # Skip if already categorised and file hasn't changed since last categorisation.
-        # If categorised_modified_at is absent (old index entry), treat as unchanged.
+        current_modified = entry.get("modified_at")
         last_cat_modified = entry.get("categorised_modified_at", current_modified)
         if entry.get("category") and last_cat_modified == current_modified:
             updated_index[path] = entry
             continue
 
-        # Step 1-4: try subject classification first
-        subject = classify_subject(path)
+        ext = entry.get("extension", "").lower()
+        source = entry.get("source", "local")
+        is_local = source == "local"
+        can_read = is_local and ext in CONTENT_READABLE_EXTENSIONS
 
-        if subject:
-            category = subject
-        else:
-            ext = entry.get("extension", "").lower()
-            # Step 5: Ollama AI — skip media files, they need multimodal (Tier 2)
-            if ext not in OLLAMA_SKIP_EXTENSIONS and _ollama_available:
-                try:
-                    subject = classify_by_ollama_ai(path)
-                except Exception:
-                    _ollama_available = False
-                    import warnings
-                    warnings.warn(
-                        "Ollama server is unavailable — AI classification skipped. "
-                        "Start Ollama with 'ollama serve' to enable it.",
-                        stacklevel=2,
-                    )
-            category = subject or CATEGORY_MAP.get(ext, "other")
+        subject = None
+        confidence = 0.0
+        group = "fallback"
 
-        updated_index[path] = {**entry, "category": category, "categorised_modified_at": current_modified}
+        # --- Group A: metadata scoring ---
+        a_subject, a_confidence = classify_group_a(path)
+
+        if a_confidence >= HIGH_CONFIDENCE:
+            subject, confidence, group = a_subject, a_confidence, "A"
+
+        elif a_confidence >= MED_CONFIDENCE and can_read:
+            # --- Group B: content 500 chars ---
+            b_subject, b_confidence = classify_group_b(path, 500)
+            if b_confidence >= HIGH_CONFIDENCE:
+                subject, confidence, group = b_subject, b_confidence, "B"
+            elif b_confidence >= MED_CONFIDENCE:
+                # Try 2000 chars
+                b2_subject, b2_confidence = classify_group_b(path, 2000)
+                if b2_confidence >= MED_CONFIDENCE:
+                    subject, confidence, group = b2_subject, b2_confidence, "B"
+
+        # --- Group C: semantic similarity ---
+        if group == "fallback" and can_read and _st_available:
+            try:
+                text = _read_file_text(path, 2000)
+                if text.strip():
+                    c_subject, c_confidence = classify_group_c(text)
+                    subject, confidence, group = c_subject, c_confidence, "C"
+            except ImportError:
+                _st_available = False
+                warnings.warn(
+                    "sentence-transformers not installed — Group C skipped. "
+                    "Install with: pip install sentence-transformers",
+                    stacklevel=2,
+                )
+            except Exception:
+                _st_available = False
+
+        # --- Ollama fallback (when sentence-transformers unavailable) ---
+        if group == "fallback" and ext not in MEDIA_EXTENSIONS and _ollama_available:
+            try:
+                ol_subject = classify_by_ollama_ai(path)
+                if ol_subject:
+                    subject, group = ol_subject, "ollama"
+            except Exception:
+                _ollama_available = False
+                warnings.warn(
+                    "Ollama server is unavailable — AI classification skipped. "
+                    "Start Ollama with 'ollama serve' to enable it.",
+                    stacklevel=2,
+                )
+
+        # --- Final fallback: extension map ---
+        if subject is None:
+            subject = CATEGORY_MAP.get(ext, "other")
+
+        updated_index[path] = {
+            **entry,
+            "category": subject,
+            "confidence_score": round(confidence, 3),
+            "classification_group": group,
+            "categorised_modified_at": current_modified,
+        }
 
     return updated_index
