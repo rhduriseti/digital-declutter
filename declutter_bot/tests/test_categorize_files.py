@@ -20,7 +20,7 @@ def test_categorize_files_assigns_category():
     assert updated["/tmp/a.txt"]["category"] == "documents"
 
 
-def test_categorize_files_preserves_existing_category():
+def test_categorize_files_preserves_manually_set_category():
     index = {
         "/tmp/b.jpg": {
             "path": "/tmp/b.jpg",
@@ -30,6 +30,7 @@ def test_categorize_files_preserves_existing_category():
             "created_at": "2024-01-01",
             "modified_at": "2024-01-01",
             "category": "family_photos",
+            "manually_set": True,
             "duplicate_of": None,
         }
     }

@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 import ollama
 
-from declutter_bot.core.utils import KEYWORD_TO_SUBJECT, SEED_MAP
+from declutter_bot.core.utils import KEYWORD_TO_SUBJECT, SEED_MAP, SUBJECT_DESCRIPTIONS
 from declutter_bot.core.paths import DATA_DIR, get_expanded_map_path
 
 EXPANDED_MAP_PATH = get_expanded_map_path("local")
@@ -108,9 +108,41 @@ def confidence_from_scores(scores: dict[str, int]) -> tuple[str | None, float]:
 # File text reader (used by Groups B and C)
 # ---------------------------------------------------------
 
-def _read_file_text(file_path: str, max_chars: int) -> str:
-    """Read first max_chars of a local file as text. Returns empty string on failure."""
+def extract_text_from_bytes(data: bytes, ext: str, max_chars: int = 2000) -> str:
+    """
+    Extract plain text from binary file content.
+    Uses python-docx for .docx, python-pptx for .pptx, raw decode for everything else.
+    Returns empty string on failure.
+    """
     try:
+        if ext == ".docx":
+            import docx, io
+            doc = docx.Document(io.BytesIO(data))
+            text = " ".join(p.text for p in doc.paragraphs)
+            return text[:max_chars]
+        elif ext in (".pptx", ".ppt"):
+            from pptx import Presentation
+            import io
+            prs = Presentation(io.BytesIO(data))
+            parts = []
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, "text"):
+                        parts.append(shape.text)
+            return " ".join(parts)[:max_chars]
+        else:
+            return data.decode("utf-8", errors="ignore")[:max_chars]
+    except Exception:
+        return ""
+
+
+def _read_file_text(file_path: str, max_chars: int) -> str:
+    """Read first max_chars of a local file as text. Uses format-aware extraction for docx/pptx."""
+    ext = Path(file_path).suffix.lower()
+    try:
+        if ext in (".docx", ".pptx", ".ppt"):
+            with open(file_path, "rb") as f:
+                return extract_text_from_bytes(f.read(), ext, max_chars)
         with open(file_path, "r", errors="ignore") as f:
             return f.read(max_chars)
     except (OSError, PermissionError, IsADirectoryError):
@@ -133,12 +165,11 @@ def _metadata_text(file_path: str) -> str:
 
 def classify_group_a(file_path: str, display_name: str | None = None) -> tuple[str | None, float]:
     """
-    Score folder names + filename against SEED_MAP and expanded map.
+    Score folder names + filename against SEED_MAP.
     Pass display_name for Drive files where file_path is an opaque ID.
     """
     text = display_name if display_name else _metadata_text(file_path)
-    expanded = load_expanded_map()
-    scores = score_text(text, expanded)
+    scores = score_text(text)
     return confidence_from_scores(scores)
 
 
@@ -147,12 +178,11 @@ def classify_group_a(file_path: str, display_name: str | None = None) -> tuple[s
 # ---------------------------------------------------------
 
 def classify_group_b(file_path: str, max_chars: int = 500) -> tuple[str | None, float]:
-    """Read first max_chars of local file and score against SEED_MAP + expanded map."""
+    """Read first max_chars of local file and score against SEED_MAP."""
     content = _read_file_text(file_path, max_chars)
     if not content.strip():
         return None, 0.0
-    expanded = load_expanded_map()
-    scores = score_text(content, expanded)
+    scores = score_text(content)
     return confidence_from_scores(scores)
 
 
@@ -179,7 +209,7 @@ def classify_group_c(text: str) -> tuple[str, float]:
 
     model = _get_st_model()
     subjects = list(SEED_MAP.keys())
-    descriptions = [" ".join(SEED_MAP[s][:10]) for s in subjects]
+    descriptions = [SUBJECT_DESCRIPTIONS.get(s, " ".join(SEED_MAP[s][:10])) for s in subjects]
 
     subject_embeddings = model.encode(descriptions, convert_to_tensor=True)
     text_embedding = model.encode(text[:2000], convert_to_tensor=True)
@@ -189,11 +219,10 @@ def classify_group_c(text: str) -> tuple[str, float]:
     best_score = float(similarities[best_idx])
     winner = subjects[best_idx]
 
-    # Save tokens not already in SEED_MAP to expanded map (only when confident)
-    if best_score > 0.5:
-        for token in extract_keywords(text[:2000]):
-            if token not in KEYWORD_TO_SUBJECT and len(token) > 3:
-                save_to_expanded_map(token, winner)
+    # Below this threshold the model is guessing — return None so the caller
+    # falls through to the extension map rather than assigning a wrong subject.
+    if best_score < 0.15:
+        return None, best_score
 
     return winner, best_score
 

@@ -447,6 +447,133 @@ Current pipeline is text-only. Images and video fall back to the extension map.
 
 ---
 
+## 8a. Classification Accuracy — Current State and Improvement Options
+
+### Current accuracy profile (2026-04-22)
+
+After a fresh scan of 202 Drive files:
+
+| Group | Files | Avg confidence | Notes |
+|-------|-------|---------------|-------|
+| A (metadata) | ~52 | 1.0 | High confidence — clear keyword match in filename/folder |
+| B (keyword scan) | ~70 | 0.88 | Good — content had clear keyword signals |
+| C (semantic) | ~72 | 0.14 | Low raw scores — model picks best match but isn't certain |
+| fallback | ~8 | 0.0 | Media files or empty content |
+
+**The core problem with Group C:**
+`all-MiniLM-L6-v2` is a *similarity* model, not a *classifier*. It returns cosine similarity scores like `[0.45, 0.30, 0.28...]` across 20 subjects. The winner is usually correct, but the raw score of `0.45` is mistakenly stored as the confidence. The model has no concept of "I'm not sure" — it always picks something. Low raw scores do not mean wrong answers, but they make the confidence metric meaningless.
+
+---
+
+### Option 1 — Softmax temperature scaling (quick fix, no new model)
+
+Convert raw cosine similarities into a proper probability distribution using softmax before selecting the winner:
+
+```python
+import torch.nn.functional as F
+probs = F.softmax(similarities * 10, dim=0)  # temperature=10
+best_score = float(probs[probs.argmax()])
+```
+
+- Similarities `[0.45, 0.30, 0.28...]` → probabilities `[0.62, 0.12, 0.09...]`
+- Winner stays the same; confidence becomes meaningful
+- Same model, one line change
+- **Tradeoff:** Does not improve which subject is chosen — only how confident we appear to be
+
+---
+
+### Option 2 — Zero-shot NLI classifier (better accuracy, heavier model)
+
+Replace cosine similarity with a Natural Language Inference (NLI) model trained to answer "does this text match this description?" Each subject becomes a hypothesis:
+
+```
+hypothesis: "This document is about biology."
+premise:    <file content>
+→ model outputs: entailment probability per subject
+```
+
+Recommended models:
+| Model | Size | Speed | Accuracy |
+|-------|------|-------|----------|
+| `cross-encoder/nli-deberta-v3-small` | ~180 MB | Medium | High |
+| `facebook/bart-large-mnli` | ~1.6 GB | Slow | Very high |
+| `typeform/distilbert-base-uncased-mnli` | ~250 MB | Fast | Medium |
+
+- Outputs true probabilities (sum to 1) — confidence is genuinely meaningful
+- No retraining needed — works with our existing subject descriptions
+- **Tradeoff:** Slower than MiniLM; bart-large needs significant RAM
+
+---
+
+### Option 3 — Fine-tuned classifier (best long-term accuracy)
+
+Train a small text classifier on labeled student files. After users correct misclassifications via the UI (`manually_set=True`), those corrections become training data:
+
+```
+correction: "Individual meetings.docx" → "writing" (student corrected from "social_studies")
+correction: "Frozen in Time.docx"      → "reading"  (student corrected from "writing")
+```
+
+After N corrections per subject, fine-tune a lightweight classifier (e.g. `distilbert-base-uncased`) on the accumulated data. This model replaces Group C.
+
+- **Best accuracy** — trained on actual student files
+- **Gets better over time** — more corrections → better model
+- **Privacy consideration:** training data must be anonymised before any crowdsourcing
+- **Tradeoff:** Needs ~50–100 corrections per subject before meaningful improvement; cold-start problem
+
+---
+
+### Option 4 — Improved seed map + Group B first (pragmatic, no new model)
+
+Most misclassifications happen because Group B doesn't run (file content had no keyword hits) and Group C guesses. The seed map now has ~300 keywords across 20 subjects. Adding subject-specific phrases that appear frequently in student documents would push more files from Group C → Group B:
+
+Examples of phrases to add:
+- `"thesis statement"`, `"body paragraph"` → writing
+- `"supply and demand"`, `"opportunity cost"` → economics
+- `"checks and balances"`, `"separation of powers"` → social_studies
+- `"mitochondria is the powerhouse"`, `"krebs cycle"` → biology
+
+**Who maintains this:** Your daughter — she knows what phrases appear in her actual class documents.
+
+- Zero new dependencies
+- Immediate accuracy improvement for well-represented subjects
+- **Tradeoff:** Manual effort; doesn't help for genuinely ambiguous content
+
+---
+
+### Option 5 — Confidence-based "needs review" flag (product solution)
+
+Instead of trying to fix the model, surface low-confidence Group C files to the student:
+
+```json
+{
+  "category": "social_studies",
+  "confidence_score": 0.12,
+  "classification_group": "C",
+  "needs_review": true
+}
+```
+
+The UI shows a badge (⚠️ or 🔵) on low-confidence files. Students correct wrong labels with one click → feeds Option 3 over time.
+
+This turns classification uncertainty from a bug into a feature: the app admits when it's unsure rather than pretending to be confident.
+
+---
+
+### Recommended path
+
+| Phase | Action | Effort | Impact |
+|-------|--------|--------|--------|
+| Now | Expand seed map with common student phrases (Option 4) | Low | Medium |
+| Now | Add `needs_review` flag for Group C confidence < 0.25 (Option 5) | Low | High (product) |
+| UI | Surface `needs_review` files with one-click correction | Medium | High |
+| Later | Softmax temperature scaling to fix confidence metric (Option 1) | Trivial | Low-Medium |
+| Tier 2 | Collect corrections → fine-tune classifier (Option 3) | High | Very high |
+
+The seed map expansion (Option 4) is the highest-value immediate action. Your daughter can add phrases she sees in her own class notes — she is the domain expert.
+
+---
+
 ## 9. Duplicate Detection
 
 ### Detection levels

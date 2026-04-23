@@ -9,7 +9,6 @@ from declutter_bot.tools.subject_classifier import (
     _read_file_text,
     score_text,
     confidence_from_scores,
-    load_expanded_map,
 )
 
 # Extensions where content reading adds value
@@ -59,8 +58,8 @@ def categorize_files(index: dict) -> dict:
             continue
 
         current_modified = entry.get("modified_at")
-        last_cat_modified = entry.get("categorised_modified_at", current_modified)
-        if entry.get("category") and last_cat_modified == current_modified:
+        last_cat_modified = entry.get("categorised_modified_at")
+        if entry.get("category") and last_cat_modified is not None and last_cat_modified == current_modified:
             updated_index[path] = entry
             continue
 
@@ -97,8 +96,7 @@ def categorize_files(index: dict) -> dict:
         if group == "fallback" and can_read_drive:
             drive_text = _get_drive_text(path, entry, source, _drive_connectors)
             if drive_text.strip():
-                expanded = load_expanded_map()
-                scores = score_text(drive_text, expanded)
+                scores = score_text(drive_text)
                 b_subject, b_confidence = confidence_from_scores(scores)
                 if b_confidence >= MED_CONFIDENCE:
                     subject, confidence, group = b_subject, b_confidence, "B"
@@ -113,7 +111,8 @@ def categorize_files(index: dict) -> dict:
             if text.strip():
                 try:
                     c_subject, c_confidence = classify_group_c(text)
-                    subject, confidence, group = c_subject, c_confidence, "C"
+                    if c_subject is not None:
+                        subject, confidence, group = c_subject, c_confidence, "C"
                 except ImportError:
                     _st_available = False
                     warnings.warn(
@@ -159,9 +158,10 @@ def _get_drive_text(path: str, entry: dict, source: str, connectors: dict) -> st
         account_name = source.split(":", 1)[1]
         file_id = path.rsplit("/", 1)[-1]
         mime_type = entry.get("mime_type")
+        ext = entry.get("extension", "")
         if account_name not in connectors:
             from declutter_bot.connectors.gdrive import GoogleDriveConnector
             connectors[account_name] = GoogleDriveConnector(account_name)
-        return connectors[account_name].get_file_text(file_id, mime_type, max_chars=2000)
+        return connectors[account_name].get_file_text(file_id, mime_type, max_chars=2000, ext=ext)
     except Exception:
         return ""

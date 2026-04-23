@@ -213,7 +213,7 @@ class GoogleDriveConnector(SourceConnector):
             return []
         return [p.stem for p in DRIVE_ACCOUNTS_DIR.glob("*.json")]
 
-    def get_file_text(self, file_id: str, mime_type: str | None, max_chars: int = 2000) -> str:
+    def get_file_text(self, file_id: str, mime_type: str | None, max_chars: int = 2000, ext: str = "") -> str:
         """
         Download the first max_chars of a Drive file as plain text into memory.
         Content is never written to disk and is discarded immediately after classification.
@@ -234,20 +234,29 @@ class GoogleDriveConnector(SourceConnector):
             except Exception:
                 return ""
 
-        # Regular files — download binary into memory buffer, decode as text
+        # Regular files — download binary into memory buffer, parse by extension
         try:
             from googleapiclient.http import MediaIoBaseDownload
+            from declutter_bot.tools.subject_classifier import extract_text_from_bytes
             import io
+            # Use passed ext; infer from mime_type as fallback
+            if not ext and mime_type:
+                ext_map = {
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+                    "application/pdf": ".pdf",
+                }
+                ext = ext_map.get(mime_type, "")
             request = service.files().get_media(fileId=file_id)
             buf = io.BytesIO()
             downloader = MediaIoBaseDownload(buf, request)
             done = False
             while not done:
                 _, done = downloader.next_chunk()
-                if buf.tell() >= max_chars * 4:
+                if buf.tell() >= max_chars * 10:
                     break
             buf.seek(0)
-            return buf.read(max_chars * 4).decode("utf-8", errors="ignore")[:max_chars]
+            return extract_text_from_bytes(buf.read(), ext, max_chars)
         except Exception:
             return ""
 
