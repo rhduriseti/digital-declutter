@@ -10,3 +10,6 @@ build/
 .env
 credentials.json
 credentials_web.json
+frontend/node_modules/
+frontend/dist/
+.vscode/
