@@ -7,13 +7,13 @@ def test_search_index_matches_name():
             "path": "/tmp/a.txt",
             "name": "a.txt",
             "extension": ".txt",
-            "category": "documents",
+            "category": "other",
         },
         "/tmp/photo.jpg": {
             "path": "/tmp/photo.jpg",
             "name": "photo.jpg",
             "extension": ".jpg",
-            "category": "images",
+            "category": "media",
         },
     }
 
@@ -29,13 +29,13 @@ def test_search_index_matches_extension():
             "path": "/tmp/a.txt",
             "name": "a.txt",
             "extension": ".txt",
-            "category": "documents",
+            "category": "other",
         },
         "/tmp/b.pdf": {
             "path": "/tmp/b.pdf",
             "name": "b.pdf",
             "extension": ".pdf",
-            "category": "documents",
+            "category": "other",
         },
     }
 
@@ -51,20 +51,20 @@ def test_search_index_matches_category():
             "path": "/tmp/a.txt",
             "name": "a.txt",
             "extension": ".txt",
-            "category": "documents",
+            "category": "other",
         },
         "/tmp/photo.jpg": {
             "path": "/tmp/photo.jpg",
             "name": "photo.jpg",
             "extension": ".jpg",
-            "category": "images",
+            "category": "media",
         },
     }
 
-    results = search_index(index, "images")
+    results = search_index(index, "media")
 
     assert len(results) == 1
-    assert results[0]["category"] == "images"
+    assert results[0]["category"] == "media"
 
 
 def test_search_index_partial_match():
@@ -73,13 +73,13 @@ def test_search_index_partial_match():
             "path": "/tmp/taxes_2023.pdf",
             "name": "taxes_2023.pdf",
             "extension": ".pdf",
-            "category": "documents",
+            "category": "other",
         },
         "/tmp/notes.txt": {
             "path": "/tmp/notes.txt",
             "name": "notes.txt",
             "extension": ".txt",
-            "category": "documents",
+            "category": "other",
         },
     }
 
@@ -95,7 +95,7 @@ def test_search_index_no_matches():
             "path": "/tmp/a.txt",
             "name": "a.txt",
             "extension": ".txt",
-            "category": "documents",
+            "category": "other",
         }
     }
 

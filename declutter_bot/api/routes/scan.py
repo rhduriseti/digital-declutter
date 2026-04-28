@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 import warnings
 
-from declutter_bot.tools.scan_folder import scan_folder
+from declutter_bot.tools.scan_folder import scan_folder, count_files
 from declutter_bot.core.index_manager import update_index_with_scan, load_index, save_index
 from declutter_bot.tools.categorize_files import categorize_files
 from declutter_bot.tools.detect_duplicates import detect_duplicates
@@ -22,9 +22,15 @@ class ScanRequest(BaseModel):
 
 def _run_local_scan(job_id: str, folder: str):
     try:
+        total = count_files(folder)
+        scan_state.set_progress(job_id, 0, total, "")
+
+        def on_progress(current_file: str, files_scanned: int):
+            scan_state.set_progress(job_id, files_scanned, total, current_file)
+
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            scanned = scan_folder(folder)
+            scanned = scan_folder(folder, on_progress=on_progress)
             update_index_with_scan(scanned, "local")
             index = load_index("local")
             index = categorize_files(index)

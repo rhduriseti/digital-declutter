@@ -13,7 +13,7 @@ Subject: <subject name>
 Confidence: <0.0 to 1.0>
 
 Choose only from: math, biology, chemistry, physics, english,
-history, geography, computer_science, economics, psychology,
+history, geography, computer science, economics, psychology,
 spanish, french, art, music, pe, other"""
 
 response = ollama.chat(

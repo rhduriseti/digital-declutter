@@ -49,7 +49,7 @@ def untrack_folder(folder: str) -> int:
     Does not blacklist — the folder can be added back and scanned again later.
     Returns number of entries removed.
     """
-    folder_path = Path(folder).resolve()
+    folder_path = Path(folder).expanduser().resolve()
     index = load_index("local")
     kept = {
         p: e for p, e in index.items()

@@ -162,13 +162,32 @@ def should_skip_dir(dirpath: Path) -> bool:
     return False
 
 
-def scan_folder(folder_path: str) -> List["FileMetadata"]:
+def count_files(folder_path: str) -> int:
+    """Quick pre-count of qualifying files using the same filters as scan_folder."""
+    root = Path(folder_path).expanduser().resolve()
+    count = 0
+    for dirpath_str, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
+        dirpath = Path(dirpath_str)
+        dirnames[:] = [d for d in dirnames if not should_skip_dir(dirpath / d)]
+        for filename in filenames:
+            path = dirpath / filename
+            if is_hidden(path) or is_symlink(path):
+                continue
+            if is_blacklisted_extension(path):
+                continue
+            if is_whitelisted_extension(path):
+                count += 1
+    return count
+
+
+def scan_folder(folder_path: str, on_progress=None) -> List["FileMetadata"]:
     """
     Walk through a folder recursively and return a list of FileMetadata objects,
     applying blacklist/whitelist rules, skipping system files, hidden files,
     symlinks, dangerous extensions, blacklisted folders, and project folders.
 
     Uses os.walk with topdown=True so skipped directories are never descended into.
+    on_progress(current_file: str, files_scanned: int) is called after each file.
     """
 
     root = Path(folder_path).expanduser().resolve()
@@ -183,6 +202,7 @@ def scan_folder(folder_path: str) -> List["FileMetadata"]:
         raise PermissionError(f"Folder is blacklisted and will not be scanned: {root}")
 
     results: List[FileMetadata] = []
+    files_scanned = 0
 
     for dirpath_str, dirnames, filenames in os.walk(root, topdown=True, followlinks=False):
         dirpath = Path(dirpath_str)
@@ -206,6 +226,9 @@ def scan_folder(folder_path: str) -> List["FileMetadata"]:
             try:
                 metadata = FileMetadata.from_path(path)
                 results.append(metadata)
+                files_scanned += 1
+                if on_progress:
+                    on_progress(str(path), files_scanned)
             except Exception as e:
                 print(f"Skipping {path}: {e}")
 

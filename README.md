@@ -107,6 +107,32 @@ declutter-api
 
 The API exposes the same features as the CLI. Ronit's web UI talks to this server.
 
+---
+
+## Running the frontend (web browser)
+
+```bash
+cd frontend
+npm install        # first time only
+npm run dev
+# Opens at http://localhost:5173
+```
+
+Requires the API server to be running at the same time.
+
+---
+
+## Running the desktop app (Electron)
+
+Start the API server in one terminal, then in a second terminal:
+
+```bash
+cd frontend
+npm run electron:dev
+```
+
+This launches the Electron window with the React UI. The API server must be running separately — the desktop app does not start it automatically in dev mode.
+
 For Google Drive OAuth via the API, you need a **Web application** OAuth client saved as `~/.declutter/credentials_web.json`. The CLI uses a **Desktop app** client saved as `~/.declutter/credentials.json`. These are different credentials — see Google Cloud Console to create them.
 
 ---

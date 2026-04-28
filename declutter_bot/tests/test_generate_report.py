@@ -19,7 +19,7 @@ def test_generate_report_basic_counts():
             "name": "a.txt",
             "extension": ".txt",
             "size_bytes": 10,
-            "category": "documents",
+            "category": "other",
             "duplicate_of": None,
         },
         "/tmp/b.jpg": {
@@ -27,7 +27,7 @@ def test_generate_report_basic_counts():
             "name": "b.jpg",
             "extension": ".jpg",
             "size_bytes": 20,
-            "category": "images",
+            "category": "media",
             "duplicate_of": None,
         },
     }
@@ -36,7 +36,7 @@ def test_generate_report_basic_counts():
 
     assert report["total_files"] == 2
     assert report["total_size_bytes"] == 30
-    assert report["categories"] == {"documents": 1, "images": 1}
+    assert report["categories"] == {"other": 1, "media": 1}
 
 
 def test_generate_report_duplicates():
@@ -46,7 +46,7 @@ def test_generate_report_duplicates():
             "name": "original.jpg",
             "extension": ".jpg",
             "size_bytes": 100,
-            "category": "images",
+            "category": "media",
             "duplicate_of": None,
         },
         "/tmp/copy1.jpg": {
@@ -54,7 +54,7 @@ def test_generate_report_duplicates():
             "name": "copy1.jpg",
             "extension": ".jpg",
             "size_bytes": 100,
-            "category": "images",
+            "category": "media",
             "duplicate_of": "/tmp/original.jpg",
         },
         "/tmp/copy2.jpg": {
@@ -62,7 +62,7 @@ def test_generate_report_duplicates():
             "name": "copy2.jpg",
             "extension": ".jpg",
             "size_bytes": 100,
-            "category": "images",
+            "category": "media",
             "duplicate_of": "/tmp/original.jpg",
         },
     }
@@ -77,7 +77,7 @@ def test_generate_report_duplicates():
     for f in report["duplicates"]:
         assert f["duplicate_of"] == "/tmp/original.jpg"
         assert f["size_bytes"] == 100
-        assert f["category"] == "images"
+        assert f["category"] == "media"
 
     assert report["space_saved_by_deleting_duplicates_bytes"] == 200
 
@@ -89,7 +89,7 @@ def test_generate_report_largest_files_sorted():
             "name": "small.txt",
             "extension": ".txt",
             "size_bytes": 5,
-            "category": "documents",
+            "category": "other",
             "duplicate_of": None,
         },
         "/tmp/medium.txt": {
@@ -97,7 +97,7 @@ def test_generate_report_largest_files_sorted():
             "name": "medium.txt",
             "extension": ".txt",
             "size_bytes": 50,
-            "category": "documents",
+            "category": "other",
             "duplicate_of": None,
         },
         "/tmp/large.txt": {
@@ -105,7 +105,7 @@ def test_generate_report_largest_files_sorted():
             "name": "large.txt",
             "extension": ".txt",
             "size_bytes": 500,
-            "category": "documents",
+            "category": "other",
             "duplicate_of": None,
         },
     }
