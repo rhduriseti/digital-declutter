@@ -5,8 +5,14 @@ from declutter_bot.core.file_metadata import FileMetadata
 from declutter_bot.core.paths import DRIVE_ACCOUNTS_DIR, GOOGLE_CREDENTIALS_PATH, GOOGLE_WEB_CREDENTIALS_PATH
 
 # drive.readonly — non-sensitive scope, easier Google verification
-# Full drive scope added later once verified, UI doesn't change
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+# drive.appdata — hidden per-app storage for saving index to user's own Drive
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.appdata",
+]
+
+APPDATA_INDEX_FILENAME = "claire_index.json"
+APPDATA_TOKEN_FILENAME = "claire_token.json"
 
 # File extensions we care about — mirrors scan_folder whitelist
 DRIVE_EXT_WHITELIST = {
@@ -154,20 +160,25 @@ class GoogleDriveConnector(SourceConnector):
 
     def _get_service(self):
         if self._service is None:
+            import httplib2
             from googleapiclient.discovery import build
+            from google_auth_httplib2 import AuthorizedHttp
             creds = self._load_creds()
-            self._service = build("drive", "v3", credentials=creds)
+            http = httplib2.Http(timeout=30)
+            authorized_http = AuthorizedHttp(creds, http=http)
+            self._service = build("drive", "v3", http=authorized_http)
         return self._service
 
     # ------------------------------------------------------------------
     # Scan
     # ------------------------------------------------------------------
 
-    def scan(self) -> list[FileMetadata]:
+    def scan(self, on_progress=None) -> list[FileMetadata]:
         """
         List all files in Drive and return as FileMetadata objects.
         Uses pagination to handle large drives.
         md5Checksum is fetched for free — no file download needed.
+        on_progress(count) is called after each page with the running total found so far.
         """
         service = self._get_service()
         results = []
@@ -186,6 +197,9 @@ class GoogleDriveConnector(SourceConnector):
                 metadata = self._to_file_metadata(f)
                 if metadata:
                     results.append(metadata)
+
+            if on_progress:
+                on_progress(len(results))
 
             page_token = response.get("nextPageToken")
             if not page_token:
@@ -239,7 +253,6 @@ class GoogleDriveConnector(SourceConnector):
             from googleapiclient.http import MediaIoBaseDownload
             from declutter_bot.tools.subject_classifier import extract_text_from_bytes
             import io
-            # Use passed ext; infer from mime_type as fallback
             if not ext and mime_type:
                 ext_map = {
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
@@ -260,7 +273,85 @@ class GoogleDriveConnector(SourceConnector):
         except Exception:
             return ""
 
+    # ------------------------------------------------------------------
+    # appDataFolder — hidden per-app storage in the user's Drive
+    # Index and token backups live here so data survives local disk wipes.
+    # ------------------------------------------------------------------
+
+    def read_appdata_file(self, filename: str) -> str | None:
+        """Read a file from this Drive's appDataFolder. Returns content or None if not found."""
+        service = self._get_service()
+        try:
+            results = service.files().list(
+                spaces="appDataFolder",
+                q=f"name='{filename}'",
+                fields="files(id)",
+                pageSize=1,
+            ).execute()
+            files = results.get("files", [])
+            if not files:
+                return None
+            file_id = files[0]["id"]
+            content = service.files().get_media(fileId=file_id).execute()
+            return content.decode("utf-8") if isinstance(content, bytes) else content
+        except Exception:
+            return None
+
+    def write_appdata_file(self, filename: str, content: str):
+        """Write (or overwrite) a file in this Drive's appDataFolder."""
+        from googleapiclient.http import MediaInMemoryUpload
+        service = self._get_service()
+
+        results = service.files().list(
+            spaces="appDataFolder",
+            q=f"name='{filename}'",
+            fields="files(id)",
+            pageSize=1,
+        ).execute()
+        existing = results.get("files", [])
+
+        media = MediaInMemoryUpload(content.encode("utf-8"), mimetype="application/json")
+
+        if existing:
+            service.files().update(
+                fileId=existing[0]["id"],
+                media_body=media,
+            ).execute()
+        else:
+            service.files().create(
+                body={"name": filename, "parents": ["appDataFolder"]},
+                media_body=media,
+            ).execute()
+
+    def delete_appdata_file(self, filename: str):
+        """Delete a file from this Drive's appDataFolder."""
+        service = self._get_service()
+        results = service.files().list(
+            spaces="appDataFolder",
+            q=f"name='{filename}'",
+            fields="files(id)",
+            pageSize=1,
+        ).execute()
+        for f in results.get("files", []):
+            service.files().delete(fileId=f["id"]).execute()
+
+    def trash_file(self, file_id: str):
+        """Move a Drive file to trash (recoverable for 30 days)."""
+        service = self._get_service()
+        service.files().update(fileId=file_id, body={"trashed": True}).execute()
+
     def logout(self):
-        """Remove the saved token. Index is kept so reconnecting restores without rescan."""
+        """Revoke token with Google and remove locally. Index is kept so reconnecting restores without rescan."""
         if self.token_path.exists():
+            try:
+                creds = self._load_creds()
+                import requests as req
+                req.post(
+                    "https://oauth2.googleapis.com/revoke",
+                    params={"token": creds.token},
+                    headers={"Content-type": "application/x-www-form-urlencoded"},
+                    timeout=5,
+                )
+            except Exception:
+                pass
             self.token_path.unlink()

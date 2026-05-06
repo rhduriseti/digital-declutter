@@ -1,3 +1,4 @@
+import json
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from pathlib import Path
@@ -9,7 +10,8 @@ from declutter_bot.core.index_manager import update_index_with_scan, load_index,
 from declutter_bot.tools.categorize_files import categorize_files
 from declutter_bot.tools.detect_duplicates import detect_duplicates
 from declutter_bot.tools.generate_report import generate_report, generate_report_for_scan
-from declutter_bot.connectors.gdrive import GoogleDriveConnector
+from declutter_bot.connectors.gdrive import GoogleDriveConnector, APPDATA_INDEX_FILENAME
+from declutter_bot.core.paths import get_index_path
 from declutter_bot.api import scan_state
 
 router = APIRouter(prefix="/scan", tags=["scan"])
@@ -33,7 +35,10 @@ def _run_local_scan(job_id: str, folder: str):
             scanned = scan_folder(folder, on_progress=on_progress)
             update_index_with_scan(scanned, "local")
             index = load_index("local")
-            index = categorize_files(index)
+            index = categorize_files(
+                index,
+                on_progress=lambda done, cat_total: scan_state.set_progress(job_id, done, cat_total, "Classifying files…"),
+            )
             index = detect_duplicates(index)
             save_index(index, "local")
             report = generate_report_for_scan(index, Path(folder))
@@ -48,12 +53,29 @@ def _run_drive_scan(job_id: str, account_name: str):
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             connector = GoogleDriveConnector(account_name)
-            scanned = connector.scan()
+
+            # Restore existing index from appDataFolder before scanning so that
+            # already-categorised files are preserved and only new/changed files get reclassified.
+            if not get_index_path(source_id).exists():
+                content = connector.read_appdata_file(APPDATA_INDEX_FILENAME)
+                if content:
+                    save_index(json.loads(content), source_id)
+
+            scanned = connector.scan(
+                on_progress=lambda count: scan_state.set_progress(job_id, count, 0, "Discovering files…")
+            )
             update_index_with_scan(scanned, source_id)
             index = load_index(source_id)
-            index = categorize_files(index)
+            index = categorize_files(
+                index,
+                on_progress=lambda done, total: scan_state.set_progress(job_id, done, total, "Classifying files…"),
+            )
             index = detect_duplicates(index)
             save_index(index, source_id)
+
+            # Persist index to Drive appDataFolder — survives local disk wipes
+            connector.write_appdata_file(APPDATA_INDEX_FILENAME, json.dumps(index, default=str))
+
             report = generate_report(index)
         scan_state.set_done(job_id, report, [str(w.message) for w in caught])
     except Exception as e:
@@ -79,5 +101,6 @@ def start_scan(req: ScanRequest, background_tasks: BackgroundTasks):
 def scan_status(job_id: str):
     job = scan_state.get_job(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+        # Return done instead of 404 — handles polling race after job cleanup
+        return {"status": "done"}
     return job

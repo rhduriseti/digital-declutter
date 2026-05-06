@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { API, apiFetch } from '../config.js'
 
-const API = 'http://localhost:8000'
+const isElectron = !!window.electron?.isElectron
 
 function formatBytes(bytes) {
   if (!bytes) return '0 MB'
@@ -74,15 +75,20 @@ export default function Duplicates() {
   const [source, setSource] = useState('')
   const [loading, setLoading] = useState(true)
   const [totalWasted, setTotalWasted] = useState(0)
-  const [sources, setSources] = useState([{ label: 'All', value: '' }, { label: 'My Computer', value: 'local' }])
+  const [sources, setSources] = useState(() => {
+    const opts = [{ label: 'All', value: '' }]
+    if (isElectron) opts.push({ label: 'My Computer', value: 'local' })
+    return opts
+  })
 
   useEffect(() => {
     async function loadAccounts() {
       try {
-        const res = await fetch(`${API}/drive/accounts`)
+        const res = await apiFetch(`${API}/drive/accounts`)
         const data = await res.json()
         const accounts = data.accounts || []
-        const opts = [{ label: 'All', value: '' }, { label: 'My Computer', value: 'local' }]
+        const opts = [{ label: 'All', value: '' }]
+        if (isElectron) opts.push({ label: 'My Computer', value: 'local' })
         if (accounts.includes('school')) opts.push({ label: 'School Drive', value: 'gdrive:school' })
         if (accounts.includes('personal')) opts.push({ label: 'Personal Drive', value: 'gdrive:personal' })
         setSources(opts)
@@ -101,7 +107,7 @@ export default function Duplicates() {
       const url = source
         ? `${API}/report/duplicates?source=${source}`
         : `${API}/report/duplicates`
-      const res = await fetch(url)
+      const res = await apiFetch(url)
       const data = await res.json()
       setGroups(data)
       setTotalWasted(data.reduce((sum, g) => sum + g.space_wasted_bytes, 0))
@@ -178,7 +184,7 @@ function DuplicateGroup({ group, isLast, onDeleted }) {
   async function handleDelete(file) {
     setDeleting(file.path)
     try {
-      await fetch(`${API}/staging/stage`, {
+      await apiFetch(`${API}/staging/stage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: file.path, source: file.source }),
@@ -213,7 +219,18 @@ function DuplicateGroup({ group, isLast, onDeleted }) {
             <div className="flex items-center gap-3 min-w-0">
               {sourceIcon(file.source)}
               <div className="min-w-0">
-                <p className="text-sm text-gray-700 truncate">{friendlyPath(file)}</p>
+                {file.web_view_link ? (
+                  <a
+                    href={file.web_view_link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-600 hover:text-blue-800 hover:underline truncate block transition-colors"
+                  >
+                    {friendlyPath(file)}
+                  </a>
+                ) : (
+                  <p className="text-sm text-gray-700 truncate">{friendlyPath(file)}</p>
+                )}
                 {file.modified_at && (
                   <p className="text-xs text-gray-400">Modified: {formatDate(file.modified_at)}</p>
                 )}
@@ -221,20 +238,23 @@ function DuplicateGroup({ group, isLast, onDeleted }) {
             </div>
             <div className="flex items-center gap-3 shrink-0 ml-4">
               <span className="text-sm text-gray-500 whitespace-nowrap">{sourceLabel(file.source)}</span>
-              {j > 0 && (
+              {j > 0 && file.web_view_link && (
+                <a
+                  href={file.web_view_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs text-blue-500 hover:text-blue-700 font-medium transition-colors whitespace-nowrap"
+                >
+                  Review & Delete
+                </a>
+              )}
+              {j > 0 && !file.web_view_link && (
                 <button
                   onClick={() => handleDelete(file)}
                   disabled={deleting === file.path}
                   className="text-xs text-red-400 hover:text-red-600 font-medium transition-colors disabled:opacity-50 whitespace-nowrap"
                 >
                   {deleting === file.path ? 'Removing…' : 'Remove'}
-                </button>
-              )}
-              {file.web_view_link && (
-                <button onClick={() => window.open(file.web_view_link, '_blank')}>
-                  <svg className="w-4 h-4 text-gray-300 hover:text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                  </svg>
                 </button>
               )}
             </div>

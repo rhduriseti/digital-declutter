@@ -5,10 +5,12 @@ from declutter_bot.api.routes import report, scan, search, staging, blacklist, d
 
 app = FastAPI(title="Declutter API", version="0.1.0")
 
-# Allow Ronit's HTML pages (opened as file:// or localhost) to call the API
+import os
+ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

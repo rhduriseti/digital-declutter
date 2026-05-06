@@ -4,6 +4,7 @@ from typing import Optional
 
 from declutter_bot.core.staging_manager import (
     get_staging_summary,
+    move_to_staging,
     restore_file,
     restore_all,
     empty_staging,
@@ -17,9 +18,35 @@ class RestoreRequest(BaseModel):
     all: bool = False
 
 
+class StageRequest(BaseModel):
+    path: str
+    source: Optional[str] = "local"
+
+
 @router.get("")
 def list_staged():
     return get_staging_summary()
+
+
+@router.post("/stage")
+def stage_file(req: StageRequest):
+    if req.source and req.source.startswith("gdrive:"):
+        account_name = req.source.split(":", 1)[1]
+        file_id = req.path.split("/")[-1]
+        from declutter_bot.connectors.gdrive import GoogleDriveConnector
+        from declutter_bot.core.index_manager import load_index, save_index
+        connector = GoogleDriveConnector(account_name)
+        if not connector.token_path.exists():
+            raise HTTPException(status_code=404, detail=f"No token for '{account_name}'")
+        connector.trash_file(file_id)
+        index = load_index(req.source)
+        if req.path in index:
+            del index[req.path]
+            save_index(index, req.source)
+        return {"staged": req.path, "source": req.source}
+    else:
+        staged_path = move_to_staging(req.path)
+        return {"staged": req.path, "staging_path": staged_path}
 
 
 @router.post("/restore")

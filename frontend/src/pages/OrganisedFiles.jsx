@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { API, apiFetch } from '../config.js'
 
-const API = 'http://localhost:8000'
+const isElectron = !!window.electron?.isElectron
 
 function formatBytes(bytes) {
   if (!bytes) return '0 MB'
@@ -18,17 +19,22 @@ export default function OrganisedFiles() {
   const [expanded, setExpanded] = useState(null)
   const [loading, setLoading] = useState(true)
   const [dragOver, setDragOver] = useState(null)
-  const [sources, setSources] = useState([{ label: 'All', value: '' }, { label: 'My Computer', value: 'local' }])
+  const [sources, setSources] = useState(() => {
+    const opts = [{ label: 'All', value: '' }]
+    if (isElectron) opts.push({ label: 'My Computer', value: 'local' })
+    return opts
+  })
   const draggingFile = useRef(null)
   const draggingFromCat = useRef(null)
 
   useEffect(() => {
     async function loadAccounts() {
       try {
-        const res = await fetch(`${API}/drive/accounts`)
+        const res = await apiFetch(`${API}/drive/accounts`)
         const data = await res.json()
         const accounts = data.accounts || []
-        const opts = [{ label: 'All', value: '' }, { label: 'My Computer', value: 'local' }]
+        const opts = [{ label: 'All', value: '' }]
+        if (isElectron) opts.push({ label: 'My Computer', value: 'local' })
         if (accounts.includes('school')) opts.push({ label: 'School Drive', value: 'gdrive:school' })
         if (accounts.includes('personal')) opts.push({ label: 'Personal Drive', value: 'gdrive:personal' })
         setSources(opts)
@@ -44,7 +50,7 @@ export default function OrganisedFiles() {
         const url = source
           ? `${API}/report/organised?source=${source}`
           : `${API}/report/organised`
-        const res = await fetch(url)
+        const res = await apiFetch(url)
         setGrouped(await res.json())
       } catch {}
       setLoading(false)
@@ -59,7 +65,6 @@ export default function OrganisedFiles() {
 
     if (!file || !fromCat || fromCat === targetCat) return
 
-    // Optimistic UI update
     setGrouped((prev) => {
       const next = { ...prev }
       next[fromCat] = prev[fromCat].filter((f) => f.path !== file.path)
@@ -68,17 +73,15 @@ export default function OrganisedFiles() {
       return next
     })
 
-    // Persist to backend
     try {
-      await fetch(`${API}/files/${encodeURIComponent(file.path)}/category`, {
+      await apiFetch(`${API}/files/${encodeURIComponent(file.path)}/category`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category: targetCat, source: file.source || 'local' }),
       })
     } catch {
-      // revert on failure by reloading
       const url = source ? `${API}/report/organised?source=${source}` : `${API}/report/organised`
-      const res = await fetch(url)
+      const res = await apiFetch(url)
       setGrouped(await res.json())
     }
 

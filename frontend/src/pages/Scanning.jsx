@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../config.js'
 
 export default function Scanning() {
   const navigate = useNavigate()
@@ -12,6 +11,7 @@ export default function Scanning() {
   const [total, setTotal] = useState(0)
   const [percent, setPercent] = useState(0)
   const [currentFile, setCurrentFile] = useState('')
+  const pollCount = useRef(0)
 
   useEffect(() => {
     if (jobs.length === 0) {
@@ -20,11 +20,20 @@ export default function Scanning() {
     }
 
     const interval = setInterval(async () => {
+      if (pollCount.current++ > 300) {
+        clearInterval(interval)
+        navigate('/dashboard')
+        return
+      }
+
       const statuses = await Promise.all(
-        jobs.map((j) => fetch(`${API}/scan/status/${j.jobId}`).then((r) => r.json()))
+        jobs.map((j) =>
+          apiFetch(`${API}/scan/status/${j.jobId}`)
+            .then((r) => r.ok ? r.json() : { status: 'done' })
+            .catch(() => ({ status: 'done' }))
+        )
       )
 
-      // Aggregate progress across all jobs
       let totalScanned = 0
       let totalFiles = 0
       let latestFile = ''
@@ -41,6 +50,8 @@ export default function Scanning() {
         setFilesScanned(totalScanned)
         setTotal(totalFiles)
         setPercent(Math.round((totalScanned / totalFiles) * 100))
+      } else if (totalScanned > 0) {
+        setFilesScanned(totalScanned)
       }
       if (latestFile) setCurrentFile(latestFile)
 
@@ -77,24 +88,34 @@ export default function Scanning() {
 
         {/* Progress */}
         <div className="flex flex-col gap-2">
-          {total === 0 ? (
-            <>
-              <p className="text-sm text-gray-400 text-center">Counting files…</p>
-              <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
-                <div className="h-3 rounded-full bg-blue-300 animate-pulse w-full" />
-              </div>
-            </>
-          ) : (
+          {total > 0 ? (
             <>
               <div className="flex justify-between text-sm text-gray-500">
-                <span>{filesScanned} of {total} files scanned</span>
+                <span>Classifying {filesScanned.toLocaleString()} of {total.toLocaleString()} files</span>
                 <span>{percent}%</span>
               </div>
               <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
                 <div
-                  className="h-3 rounded-full bg-blue-600 transition-all duration-500"
+                  className="h-3 rounded-full bg-blue-600 transition-all duration-300"
                   style={{ width: `${percent}%` }}
                 />
+              </div>
+            </>
+          ) : filesScanned > 0 ? (
+            <>
+              <p className="text-sm text-gray-400 text-center">{filesScanned.toLocaleString()} files discovered…</p>
+              <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                <div
+                  className="h-3 rounded-full bg-blue-400 transition-all duration-700"
+                  style={{ width: `${Math.min((1 - 1 / (1 + filesScanned / 100)) * 90, 90)}%` }}
+                />
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-gray-400 text-center">Counting files…</p>
+              <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                <div className="h-3 rounded-full bg-blue-300 animate-pulse w-full" />
               </div>
             </>
           )}

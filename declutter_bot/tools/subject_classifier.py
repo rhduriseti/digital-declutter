@@ -2,7 +2,6 @@ from fileinput import filename
 import json
 import re
 from pathlib import Path
-import ollama
 
 from declutter_bot.core.utils import KEYWORD_TO_SUBJECT, SEED_MAP, SUBJECT_DESCRIPTIONS
 from declutter_bot.core.paths import DATA_DIR, get_expanded_map_path
@@ -305,6 +304,7 @@ Example:
 Choose only from: {", ".join(SEED_MAP.keys())}, other
 """
 
+    import ollama
     response = ollama.chat(
         model="gemma3:4b",
         messages=[{"role": "user", "content": prompt}]

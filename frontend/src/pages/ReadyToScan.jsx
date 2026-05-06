@@ -1,6 +1,5 @@
 import { useNavigate, useLocation } from 'react-router-dom'
-
-const API = 'http://localhost:8000'
+import { API, apiFetch } from '../config.js'
 
 const FEATURES = [
   'Find duplicates',
@@ -18,7 +17,7 @@ export default function ReadyToScan() {
     const jobs = []
 
     for (const folder of folders) {
-      const res = await fetch(`${API}/scan`, {
+      const res = await apiFetch(`${API}/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ folder, source: 'local' }),
@@ -28,7 +27,7 @@ export default function ReadyToScan() {
     }
 
     for (const account of connectedAccounts) {
-      const res = await fetch(`${API}/scan`, {
+      const res = await apiFetch(`${API}/scan`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: `gdrive:${account}` }),

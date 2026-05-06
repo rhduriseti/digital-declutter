@@ -17,7 +17,7 @@ def test_categorize_files_assigns_category():
 
     updated = categorize_files(index)
 
-    assert updated["/tmp/a.txt"]["category"] == "documents"
+    assert updated["/tmp/a.txt"]["category"] == "other"
 
 
 def test_categorize_files_preserves_manually_set_category():

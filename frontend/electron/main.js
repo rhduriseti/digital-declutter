@@ -36,14 +36,14 @@ function createWindow() {
   } else {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
   }
-}
 
-ipcMain.handle('dialog:openFolder', async () => {
-  const result = await dialog.showOpenDialog(mainWindow, {
-    properties: ['openDirectory'],
+  ipcMain.handle('dialog:openFolder', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+    })
+    return result.canceled ? null : result.filePaths[0]
   })
-  return result.canceled ? null : result.filePaths[0]
-})
+}
 
 app.whenReady().then(() => {
   startBackend()

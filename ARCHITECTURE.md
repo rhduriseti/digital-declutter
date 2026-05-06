@@ -574,6 +574,142 @@ The seed map expansion (Option 4) is the highest-value immediate action. Your da
 
 ---
 
+## 8b. Cloud Run + Firestore + Drive AppDataFolder — Scan & Report Flow
+
+> Last updated: 2026-04-30
+
+### Data ownership rule: container disk is a cache, not source of truth
+
+| Data | Source of truth | Container disk role |
+|------|----------------|---------------------|
+| OAuth token | Firestore `users/{uid}/tokens/{account}` | Cache — restored from Firestore before each scan |
+| File index | Drive appDataFolder `claire_index.json` | Cache — restored on login or lazily on first report |
+| Scan job status | Firestore `scan_jobs/{job_id}` | Not stored on disk |
+| Blacklist / settings | Container disk only ⚠️ | Lost on restart — pending fix (store in appDataFolder) |
+
+---
+
+### Scan flow step by step
+
+```
+1. User clicks "Scan Now"
+   ↓
+   Frontend (Dashboard.jsx)
+   POST /scan   (once per connected Drive account, e.g. school + personal)
+   ↓
+2. POST /scan handler (scan.py) — runs on Cloud Run container A
+   a. _restore_token_to_disk(uid, account)
+      Firestore: users/{uid}/tokens/school → container disk ~/.declutter/drive_accounts/school.json
+   b. scan_state.create_job()
+      Firestore: scan_jobs/{job_id} = { status: "running", created_at: "...", progress: null }
+   c. Register background task _run_drive_scan(job_id, account)
+   d. Return { job_id } immediately to frontend
+   ↓
+3. _run_drive_scan — background thread, same container A
+   a. connector.scan(on_progress=...)
+      Drive API: list files page by page (1000/page)
+      After each page → set_progress(job_id, count, total=0, "")
+        → Firestore update: scan_jobs/{job_id}.progress.files_scanned = N
+   b. update_index_with_scan(scanned, source_id)
+      Writes ~/.declutter/gdrive_school_index.json on container disk
+   c. categorize_files(index) — keyword + semantic classification
+   d. detect_duplicates(index) — MD5 matching across all sources
+   e. save_index(index, source_id)
+      Writes ~/.declutter/gdrive_school_index.json (updated)
+   f. connector.write_appdata_file("claire_index.json", index)
+      Drive API → writes to school Drive's appDataFolder (hidden, only this app sees it)
+   g. scan_state.set_done(job_id, report, warnings)
+      Firestore: scan_jobs/{job_id} = { status: "done", result: {...} }
+
+   If any step throws:
+      scan_state.set_error(job_id, str(e))
+      Firestore: scan_jobs/{job_id} = { status: "error", error: "..." }
+   ↓
+4. Frontend polls GET /scan/status/{job_id} every 1 second
+   a. scan_state.get_job(job_id)
+      Reads Firestore: scan_jobs/{job_id}
+      If status="running" AND age > 5 minutes → auto-expire:
+        Firestore update: status="error", error="Scan timed out"
+        Returns { status: "error" } — frontend navigates to dashboard
+   b. Frontend aggregates progress across all jobs:
+      total=0, filesScanned>0 → "1,247 files found…" + pulse bar (Drive pagination in progress)
+      total>0               → "X of Y files — N%" + progress bar (local scan)
+      all jobs done/error   → navigate to /dashboard
+      after 300 polls (5 min) → force navigate to /dashboard
+   ↓
+5. Dashboard loads — GET /report, GET /report?source=gdrive:school, etc.
+   a. _ensure_drive_indexes(uid) — lazy restore
+      Queries Firestore for all connected accounts for this uid
+      For each account:
+        index file on container disk? → skip (use disk cache)
+        index file missing?          → restore:
+          _restore_token_to_disk(uid, account) → token from Firestore to disk
+          connector.read_appdata_file("claire_index.json") → Drive appDataFolder to disk
+   b. load_combined_index()
+      Reads from container disk — always fast after step (a) ensures files exist
+   c. Filter by source, generate report/organised view/duplicates
+```
+
+---
+
+### Container restart scenario
+
+```
+Container A runs scan → saves index to disk + Drive appDataFolder → Firestore: status=done
+Container A dies (Cloud Run scales to zero)
+Container B spins up (new request)
+GET /report hits container B → disk is empty
+  → _ensure_drive_indexes() → reads Firestore for accounts → restores token + index from appDataFolder
+  → load_combined_index() reads from disk (now populated)
+  → report served correctly
+```
+
+---
+
+### Stale job scenario (container dies mid-scan)
+
+```
+Container A starts scan → Firestore: status=running
+Container A crashes before set_done is called
+Container B spins up
+GET /scan/status/{job_id} hits container B
+  → get_job() reads Firestore → status=running, age=6 minutes > 5 minute threshold
+  → auto-expires: Firestore update status=error
+  → returns { status: "error" }
+Frontend sees error → navigates to dashboard
+User can scan again — new job, clean state
+```
+
+---
+
+### Disconnect flow
+
+```
+DELETE /drive/{account_name}
+  1. connector.delete_appdata_file("claire_index.json")
+     Drive API → deletes index from Drive appDataFolder
+  2. connector.logout()
+     Revokes OAuth token with Google + deletes token from container disk
+  3. Firestore: delete users/{uid}/tokens/{account}
+  4. purge_source_from_index(source_id)
+     Deletes ~/.declutter/gdrive_school_index.json from container disk
+Result: reconnecting forces a fresh scan — no stale data carried over
+```
+
+---
+
+### Login / restore flow
+
+```
+App.jsx on sign-in → for each connected account (from Firestore):
+  POST /drive/{account}/restore
+    _restore_token_to_disk(uid, account)   → Firestore → disk
+    connector.read_appdata_file(...)        → Drive appDataFolder → disk
+This primes the container disk cache so the first report request is fast
+```
+
+---
+
 ## 9. Duplicate Detection
 
 ### Detection levels

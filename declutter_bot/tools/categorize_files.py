@@ -29,14 +29,14 @@ HIGH_CONFIDENCE = 0.7
 MED_CONFIDENCE = 0.4
 
 
-def categorize_files(index: dict) -> dict:
+def categorize_files(index: dict, on_progress=None) -> dict:
     """
     Categorise every file in the index using the 3-group pipeline.
 
     Group A — metadata only (folder + filename keywords). Fast, no file read.
     Group B — content keyword scan (500 then 2000 chars).
     Group C — sentence-transformers semantic similarity. Always returns a subject.
-    Ollama  — fallback if sentence-transformers not installed.
+    Ollama  — primary AI classifier via local Gemma model.
 
     For Drive files, content is downloaded transiently into memory for Groups B/C.
     It is never written to disk or sent to any third party.
@@ -45,22 +45,33 @@ def categorize_files(index: dict) -> dict:
     - Skip entries where manually_set=True (student's choice is permanent)
     - Skip entries where category exists and file is unchanged since last categorisation
     - Store confidence_score and classification_group alongside category
+
+    on_progress(done, total) — called after each file is processed.
     """
     updated_index = {}
     _st_available = True
     _ollama_available = True
     _drive_connectors: dict = {}
 
+    total = len(index)
+    done = 0
+
     for path, entry in index.items():
         # Never reclassify student corrections
         if entry.get("manually_set"):
             updated_index[path] = entry
+            done += 1
+            if on_progress:
+                on_progress(done, total)
             continue
 
         current_modified = entry.get("modified_at")
         last_cat_modified = entry.get("categorised_modified_at")
         if entry.get("category") and last_cat_modified is not None and last_cat_modified == current_modified:
             updated_index[path] = entry
+            done += 1
+            if on_progress:
+                on_progress(done, total)
             continue
 
         ext = entry.get("extension", "").lower()
@@ -75,7 +86,6 @@ def categorize_files(index: dict) -> dict:
         group = "fallback"
 
         # --- Group A: metadata scoring ---
-        # Drive paths are opaque IDs — use actual filename from index entry
         display_name = entry.get("name") if is_drive else None
         a_subject, a_confidence = classify_group_a(path, display_name)
 
@@ -123,7 +133,7 @@ def categorize_files(index: dict) -> dict:
                 except Exception:
                     _st_available = False
 
-        # --- Ollama fallback (when sentence-transformers unavailable) ---
+        # --- Ollama (local Gemma): AI classifier ---
         if group == "fallback" and ext not in MEDIA_EXTENSIONS and _ollama_available:
             try:
                 ol_subject = classify_by_ollama_ai(path)
@@ -148,6 +158,10 @@ def categorize_files(index: dict) -> dict:
             "classification_group": group,
             "categorised_modified_at": current_modified,
         }
+
+        done += 1
+        if on_progress:
+            on_progress(done, total)
 
     return updated_index
 

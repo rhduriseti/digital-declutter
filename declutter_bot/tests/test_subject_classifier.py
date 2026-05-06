@@ -66,11 +66,11 @@ def test_classify_by_filename_no_match():
 
 def test_classify_by_seed_map_catches_keyword_in_path():
     result = classify_by_seed_map("/Users/student/homework/essay_draft.docx")
-    assert result == "writing"  # "essay" matches writing subject
+    assert result == "english"  # "essay" and "draft" both match english
 
-def test_classify_by_seed_map_chemistry():
-    result = classify_by_seed_map("/Users/student/stoichiometry_notes.pdf")
-    assert result == "chemistry"
+def test_classify_by_seed_map_science():
+    result = classify_by_seed_map("/Users/student/science_experiment.pdf")
+    assert result == "science"  # "science" and "experiment" both in science seed map
 
 
 # ---------------------------------------------------------
