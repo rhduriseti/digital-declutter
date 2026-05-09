@@ -135,11 +135,16 @@ def _read_file_text(file_path: str, max_chars: int) -> str:
         return ""
 
 
+def _normalize_name(name: str) -> str:
+    """Replace underscores, hyphens, and digits with spaces so \b word boundaries work."""
+    return re.sub(r'[_\-0-9]+', ' ', name)
+
+
 def _metadata_text(file_path: str) -> str:
     """Build combined folder + filename text for Group A scoring."""
     path = Path(file_path)
-    parts = [path.stem] + [
-        p.name for p in path.parents
+    parts = [_normalize_name(path.stem)] + [
+        _normalize_name(p.name) for p in path.parents
         if p.name and p.name.lower() not in GENERIC_FOLDER_NAMES
     ]
     return " ".join(parts)
@@ -155,7 +160,7 @@ def classify_group_a(file_path: str, display_name: str | None = None) -> tuple[s
     Pass display_name for Drive files where file_path is an opaque ID.
     Returns (subject, confidence, raw_scores).
     """
-    text = display_name if display_name else _metadata_text(file_path)
+    text = _normalize_name(display_name) if display_name else _metadata_text(file_path)
     scores = score_text(text)
     subject, confidence = confidence_from_scores(scores)
     return subject, confidence, scores

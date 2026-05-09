@@ -99,7 +99,7 @@ SEED_MAP = {
         "pitch", "treble clef", "bass clef", "time signature",
         "dynamics", "notation", "symphony", "orchestra", "ensemble",
         "rehearsal", "sonata", "opus", "audition", "band", "choir", "composition", 
-        "theory", "notes", "chords", "rhythm", "melody", "instruments", "sheet music",
+        "theory", "chords", "rhythm", "melody", "instruments", "sheet music",
         "saxophone", "piano", "guitar", "violin", "drums", "flute", "trumpet", "cello",
         "flute", "clarinet", "bass", "percussion", "conductor", "recital", "oboe",
         "basoon", "french horn", "trombone", "tuba", "baratone", "alto", "soprano", "tenor", 

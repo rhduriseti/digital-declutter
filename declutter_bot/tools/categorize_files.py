@@ -30,8 +30,10 @@ MEDIA_EXTENSIONS = {
 
 # Groups A and B must clear this threshold AND be unambiguous to skip Gemma
 HIGH_CONFIDENCE = 0.9
-# Minimum total keyword score to trust a classification ratio — prevents a
-# single accidental keyword match from reaching 100% confidence and bypassing Gemma
+# Minimum total keyword score — prevents accidental matches from bypassing Gemma.
+# Group A (filename) only needs 1: a subject word in the filename is strong evidence.
+# Groups B+ need 4: content needs multiple hits to be trustworthy.
+MIN_SCORE_A = 1
 MIN_SCORE = 4
 
 
@@ -123,7 +125,7 @@ def categorize_files(index: dict, on_progress=None, max_workers: int = 4) -> dic
 
             if (a_subject and a_confidence >= HIGH_CONFIDENCE
                     and not _is_ambiguous(merged_scores)
-                    and sum(merged_scores.values()) >= MIN_SCORE):
+                    and sum(merged_scores.values()) >= MIN_SCORE_A):
                 subject, confidence, group = a_subject, a_confidence, "A"
 
             # --- Group B: content keyword scan (local) ---
