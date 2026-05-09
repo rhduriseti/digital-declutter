@@ -143,7 +143,7 @@ def test_min_score_guard_sends_low_signal_file_to_gemma():
 
 def test_group_b_classifies_from_file_content():
     with tempfile.TemporaryDirectory() as tmpdir:
-        p = Path(tmpdir) / "Science" / "notes.txt"
+        p = Path(tmpdir) / "homework" / "notes.txt"
         p.parent.mkdir()
         p.write_text("photosynthesis cell dna mitosis biology organism evolution")
 

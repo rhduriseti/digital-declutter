@@ -187,34 +187,69 @@ def classify_group_b(file_path: str, max_chars: int = 500) -> tuple[str | None, 
 # Gemma inference helpers
 # ---------------------------------------------------------
 
-def _call_gemma(
+def _call_gemma(prompt: str) -> str | None:
+    """
+    Text classification via Gemma 3 on Ollama (local, private).
+    Falls back to Gemma 4 via Google AI API if Ollama is unavailable.
+    """
+    try:
+        import ollama
+        response = ollama.chat(model=GEMMA_MODEL, messages=[{"role": "user", "content": prompt}])
+        if isinstance(response, dict):
+            m = response.get("message")
+            raw = (m.get("content") if isinstance(m, dict) else None) or response.get("content")
+        elif hasattr(response, "message"):
+            raw = response.message.content
+        else:
+            raw = None
+        if raw:
+            return raw
+    except Exception:
+        pass  # fall through to Google AI API
+
+    import os
+    api_key = os.environ.get("GOOGLE_API_KEY")
+    if not api_key:
+        return None
+    try:
+        from google import genai
+        client = genai.Client(api_key=api_key)
+        backoff = 2
+        deadline = time.monotonic() + 600
+        while True:
+            try:
+                return client.models.generate_content(model=GEMMA_GOOGLE_MODEL, contents=prompt).text
+            except Exception as e:
+                is_rate_limit = any(t in str(e).lower() for t in ("429", "quota", "rate", "resource exhausted"))
+                remaining = deadline - time.monotonic()
+                if not is_rate_limit or remaining <= 0:
+                    raise
+                time.sleep(min(backoff, remaining))
+                backoff = min(backoff * 2, 60)
+    except Exception:
+        return None
+
+
+def _call_gemma_vision(
     prompt: str,
-    image_bytes: bytes | None = None,
+    image_bytes: bytes,
     image_mime_type: str = "image/jpeg",
 ) -> str | None:
     """
-    Call Gemma via Google AI API (if GOOGLE_API_KEY is set) or local Ollama.
-
-    Google AI path runs on Kaggle or any machine with an API key; it supports
-    both text and Gemma 4 Vision (multimodal).
-    Ollama path is for local development; vision requires GEMMA_VISION_MODEL.
-    Returns raw model response text, or None if both paths fail.
+    Vision classification via Gemma 4 on Google AI API (multimodal).
+    Gemma 3 does not support vision — this path always requires GOOGLE_API_KEY.
+    Falls back to Ollama gemma4:31b only if available locally (~20 GB RAM needed).
     """
     import os
     api_key = os.environ.get("GOOGLE_API_KEY")
-
     if api_key:
         try:
             from google import genai
             from google.genai import types
             client = genai.Client(api_key=api_key)
-            if image_bytes:
-                contents = [prompt, types.Part.from_bytes(data=image_bytes, mime_type=image_mime_type)]
-            else:
-                contents = prompt
-
+            contents = [prompt, types.Part.from_bytes(data=image_bytes, mime_type=image_mime_type)]
             backoff = 2
-            deadline = time.monotonic() + 600  # 10-minute max
+            deadline = time.monotonic() + 600
             while True:
                 try:
                     return client.models.generate_content(model=GEMMA_GOOGLE_MODEL, contents=contents).text
@@ -226,23 +261,19 @@ def _call_gemma(
                     time.sleep(min(backoff, remaining))
                     backoff = min(backoff * 2, 60)
         except Exception:
-            pass  # fall through to Ollama
+            pass  # fall through to local Ollama vision model
 
     try:
         import ollama
-        model_name = GEMMA_VISION_MODEL if image_bytes else GEMMA_MODEL
-        msg: dict = {"role": "user", "content": prompt}
-        if image_bytes:
-            msg["images"] = [image_bytes]
-        response = ollama.chat(model=model_name, messages=[msg])
-        raw = None
+        msg: dict = {"role": "user", "content": prompt, "images": [image_bytes]}
+        response = ollama.chat(model=GEMMA_VISION_MODEL, messages=[msg])
         if isinstance(response, dict):
             m = response.get("message")
-            if isinstance(m, dict):
-                raw = m.get("content")
-            raw = raw or response.get("content")
+            raw = (m.get("content") if isinstance(m, dict) else None) or response.get("content")
         elif hasattr(response, "message"):
             raw = response.message.content
+        else:
+            raw = None
         return raw
     except Exception:
         return None
@@ -458,7 +489,7 @@ After your reasoning, output ONLY this JSON on the final line (no markdown, no e
     except (OSError, IOError):
         return None, 0.0, None
 
-    raw = _call_gemma(prompt, image_bytes=image_data, image_mime_type=mime_type)
+    raw = _call_gemma_vision(prompt, image_bytes=image_data, image_mime_type=mime_type)
     if not raw:
         return None, 0.0, None
     return _parse_gemma_json(raw, candidates)
