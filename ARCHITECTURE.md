@@ -574,7 +574,75 @@ The seed map expansion (Option 4) is the highest-value immediate action. Your da
 
 ---
 
-## 8b. Cloud Run + Firestore + Drive AppDataFolder — Scan & Report Flow
+## 8b. Gemma 4 Classification Pipeline — Current Implementation (2026-05-08)
+
+> Replaces the sentence-transformers + expanded map approach documented in Section 8.
+
+### Model Selection
+
+| Path | Text classification | Visual classification |
+|------|--------------------|-----------------------|
+| **Google AI API** (web app, Kaggle) | `gemma-4-26b-a4b-it` — Gemma 4 MoE, 4B active params per inference | `gemma-4-26b-a4b-it` — same model, multimodal confirmed |
+| **Local Ollama** (desktop fallback) | `gemma3:4b` — fast, no cost, no internet | Not available locally (gemma4:31b needs ~20 GB RAM) |
+
+Both `gemma-4-26b-a4b-it` and `gemma-4-31b-it` are available via the Google AI API free tier (1,500 req/day, 30 RPM hard cap — no auto-charge on exceeding).
+
+**Why `gemma-4-26b-a4b-it` for both text and vision:**
+- Confirmed multimodal — reads handwritten notes, whiteboards, scanned worksheets
+- Only 4B parameters active per inference (MoE architecture) → fast and cost-efficient
+- No need to split across two models
+
+**Production model selection** (when Gemma 3 becomes available on Google AI API):
+- Text classification → Gemma 3 (sufficient accuracy, lower cost)
+- Visual classification → Gemma 4 (required for multimodal — no previous generation supported this)
+- One-line change in `GEMMA_GOOGLE_MODEL` constant when API adds Gemma 3
+
+---
+
+### Group C — Gemma (updated)
+
+Replaces sentence-transformers entirely. Called when Groups A+B confidence < 0.9 or total keyword score < 4.
+
+**Text files:**
+- Narrows to top-2 keyword candidates from Groups A+B scores
+- Chain-of-thought prompt: document type → student task → class match → decision
+- Returns `(subject, confidence, also_could_be)` — runner-up shown in UI when confidence < 0.75
+- Exponential backoff on 429 rate limit errors, 10-minute total max
+
+**Image files (Group C_visual — new):**
+- Triggered for `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.webp`
+- Group A metadata scores used to seed candidate list
+- Image bytes sent to Gemma 4 Vision alongside classification prompt
+- Falls back to `"media"` if model unavailable or image shows no academic content
+
+---
+
+### Deployment Options — Cost Analysis (to deliberate)
+
+**Option A — Google AI API only (current setup)**
+- Everything routes through `gemma-4-26b-a4b-it` via Google AI API
+- No VM or Ollama required
+- Cost: free tier covers ~1,500 req/day; paid tier pricing TBD
+- Pros: simple, no infrastructure to manage
+- Cons: rate limits, network latency (~3-5s/file), internet required
+
+**Option B — VM with Ollama for text, Google AI API for vision only**
+- VM (e.g. GCP `n2-standard-4`) runs Ollama with `gemma3:4b` for text
+- Google AI API called only for image files (fewer calls, lower API cost)
+- VM cost: ~$0.19/hr on-demand — use Cloud Run or scale-to-zero to avoid 24/7 cost
+- Pros: fast text classification, lower API spend at scale, offline-capable for text
+- Cons: VM management overhead, vision still needs internet
+- Best for: high-volume production with many users classifying many text files
+
+**TODO: Cost comparison**
+- Estimate average files per student per scan, % that reach Group C, % that are images
+- Price out Google AI API paid tier per 1,000 requests for `gemma-4-26b-a4b-it`
+- Compare against VM compute cost at projected user volume
+- Decision threshold: if >X students or >Y files/day, Option B is cheaper
+
+---
+
+## 8c. Cloud Run + Firestore + Drive AppDataFolder — Scan & Report Flow
 
 > Last updated: 2026-04-30
 

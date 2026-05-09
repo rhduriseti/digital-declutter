@@ -141,17 +141,6 @@ SEED_MAP = {
         "artificial intelligence", "cybersecurity",
     ],
 
-    "personal": [
-        "talent show", "club", "extracurricular", "permission slip",
-        "field trip", "signup", "sign up", "volunteer", "fundraiser",
-        "yearbook", "graduation", "prom", "homecoming", "team roster",
-        "newsletter", "multicultural", "spirit week", "assembly",
-        "ceremony", "recipe", "chore", "diary", "cruise",
-        "expenses", "waiver", "tryout", "practice schedule",
-        "game schedule", "announcements", "event", "calendar", "schedule", 
-        "family", "personal", "non-academic", "asb", "student council", "council", 
-        "student government", "sgt", "sga",
-    ],
 }
 
 # ---------------------------------------------------------
@@ -207,11 +196,6 @@ SUBJECT_DESCRIPTIONS = {
         "General and environmental science class covering the scientific method, lab experiments, "
         "hypothesis, observations, data collection, variables, and conclusions, as well as "
         "climate change, sustainability, ecosystems, renewable energy, and conservation."
-    ),
-    "personal": (
-        "Personal, extracurricular, or school event files — schedules, permission slips, "
-        "club sign-ups, talent shows, sports rosters, field trips, family documents, "
-        "and non-academic content."
     ),
 }
 
