@@ -1,141 +1,13 @@
-# Digital Declutter — Architecture Document
+# Claire — Architecture Document
 
-> Last updated: 2026-04-13
-> Target users: High school students (primarily Chromebook, some Windows/Mac)
-
----
-
-## Confirmed Architecture (2026-04-13)
-
-### Core Principle: Unified Archive Workflow
-
-Same "Archive" action for all sources — automatic for local files, guided for Drive files.
-The word "Archive" is consistent everywhere. The mechanism differs under the hood but the student never needs to understand that.
-
-### Organised View (App-Only)
-
-Files are shown organised by subject in the app. This view exists only in the app's index — nothing is written to disk, no symlinks created, no Drive shortcuts created:
-
-```
-App UI / CLI (organised view)        Real files (untouched)
-─────────────────────────────        ──────────────────────
-Biology/                             ~/Documents/bio_notes.pdf
-  bio_notes.pdf    [Show in Finder]  ~/Documents/cell_structure.pdf
-  cell_structure.pdf                 Google Drive/Bio Notes.pdf
-  Bio Notes.pdf    [Open in Drive]
-
-Math/
-  calc_test.pdf    [Open in Drive]   Google Drive/calc_test.pdf
-```
-
-Same experience across all sources and all devices — Chromebook, Mac, Windows.
-Auto-scan on app open if index is stale — no "organise" button needed.
-
-### Unified Archive Flow
-
-```
-Duplicates found — 45 MB recoverable
-
-┌─────────────────────────────────────────────┐
-│ bio_notes.pdf  (3 copies)                   │
-│                                             │
-│ ● bio_notes.pdf        local   [Archive]    │
-│ ● Bio Notes.pdf        school  [Archive]    │
-│ ● bio notes copy.pdf   personal [Archive]   │
-└─────────────────────────────────────────────┘
-         [ Archive All Duplicates ]
-```
-
-| Source | What "Archive" does |
-|--------|-------------------|
-| Local | App automatically moves to `~/.declutter_staging/` (recoverable) |
-| Drive | App shows "This file is in Google Drive. Click to open and move to Archive folder" |
-
-- Same button, same word, same mental model for student
-- Local is automatic (better UX where possible)
-- Drive is guided (honest about current permission limitation)
-- If full `drive` scope is verified later → Drive becomes automatic too, zero UI change needed
-
-### School Sales Story
-
-- App identifies duplicate files across all student accounts
-- Moves/guides to archive → frees up Google Workspace storage
-- Storage costs real money at scale → clear ROI for school IT admins
-- School IT admin is the **buyer**, students are the **users**
-
-### Google OAuth Scope Strategy
-
-- **Now:** `drive.readonly` for scanning + guided archive flow
-- **Later (after verification):** full `drive` scope → Drive archive becomes automatic
-- Verification is easier with a working product and real school usage to show Google
-
-### Auto-Scan Behaviour
-- App opens → checks if index older than X hours → auto-scans in background
-- Student opens app → organised view is just there, no buttons needed
-- Manual refresh button as escape hatch
-```
-
-Student does the actual deletion. App never does it for them.
-
-### CLI Organised View
-
-The CLI shows the same organised view as a Rich table:
-
-```
-┌──────────────┬───────────────────────┬────────┬──────────┐
-│ Subject      │ File                  │ Source │ Size     │
-├──────────────┼───────────────────────┼────────┼──────────┤
-│ Biology      │ bio_notes.pdf         │ local  │ 12 MB    │
-│              │ Bio Notes.pdf         │ school │ 12 MB ⚠️ │
-├──────────────┼───────────────────────┼────────┼──────────┤
-│ Math         │ calc_test.pdf         │ school │ 8 MB     │
-└──────────────┴───────────────────────┴────────┴──────────┘
-⚠️  6 duplicates — 45 MB recoverable
-    Run: declutter duplicates --guide   to see how to free space
-```
-
-CLI, API, and UI all show the same organised view — just rendered differently.
-
-### Why This Is Better
-
-| Concern | Current design | Safer design |
-|---------|---------------|--------------|
-| Google OAuth scope | `drive` (sensitive, hard to verify) | `drive.readonly` (non-sensitive, easy to verify) |
-| Google verification wait | Weeks, can be rejected | Days, rarely rejected |
-| Risk to student files | Some (staging, trash) | Zero — app never touches files |
-| Windows symlink issue | Blocked by school IT | Irrelevant — nothing written to disk |
-| Chromebook support | Limited | Full |
-| School IT trust | Moderate | High — read-only is easy to justify |
-| Staging manager complexity | High (Drive-aware) | Low — local only, or removed |
-| Connector interface | scan + trash + untrash + delete | scan only |
-
-### What Changes in Code
-
-| Component | Change |
-|-----------|--------|
-| `SourceConnector` base class | Remove `trash/untrash/permanent_delete` — `scan()` only |
-| `gdrive.py` | Remove trash/untrash/delete methods |
-| `staging_manager.py` | Remove Drive-aware logic, local only |
-| `delete_duplicates.py` | Remove Drive routing |
-| `generate_report` | Add subject-grouped organised view rendering |
-| `FileMetadata` | Add `web_view_link` field for Drive files |
-| Drive API fields | Add `webViewLink` to fields fetch |
-
-### What Stays the Same
-
-- Local staging (move to `~/.declutter_staging/`) — kept for explicit local deletes
-- All subject classification — unchanged
-- MD5 duplicate detection — unchanged
-- Multi-source index — unchanged
-- `--source` flag on CLI commands — unchanged
-
----
+> Last updated: 2026-05-13
+> Target users: High school students (Mac / Windows desktop)
 
 ---
 
 ## 1. Product Goal
 
-A tool that helps high school students organise, deduplicate, and categorise their school files across local storage and Google Drive. Non-destructive by design — students see what can be cleaned up and decide what to do. Nothing is deleted without explicit confirmation.
+A desktop app that helps high school students organise, deduplicate, and categorise their school files across local storage and Google Drive. Non-destructive by design — students see what can be cleaned up and decide what to do. Nothing is deleted without explicit confirmation.
 
 ---
 
@@ -145,78 +17,91 @@ Most US high school students use **Chromebooks**. This means:
 - No local filesystem the user controls
 - No `~/Google Drive/` sync folder
 - Everything lives in Google Drive natively
-- A CLI or desktop app cannot run on ChromeOS
+- A CLI or desktop app cannot run on ChromeOS natively
 
-**Consequence:** The student-facing product must be a **web app** running on a server that calls the Drive API on their behalf. The CLI remains a developer/admin tool and the foundation the web API is built on.
+**Current deployment:** Desktop app (Electron + React + FastAPI). Chromebook support requires a web app deployment (see Section 13).
 
 ---
 
 ## 3. Layer Architecture
 
 ```
-┌─────────────────────────────────────────┐
-│           Student (Browser)             │  ← Streamlit first, then PyQt6/Tauri
-├─────────────────────────────────────────┤
-│           FastAPI (Web API)             │  ← Each CLI command maps to an endpoint
-├─────────────────────────────────────────┤
-│           CLI (declutter)               │  ← Developer/admin tool, drives automation
-├────────────────────┬────────────────────┤
-│    tools/          │    core/            │  ← Business logic, never changes
-│  scan, report,     │  index, staging,    │
-│  categorise,       │  blacklist,         │
-│  detect_dupes      │  paths, utils       │
-├────────────────────┴────────────────────┤
-│           connectors/                   │  ← One per source (local, gdrive, gmail...)
-├─────────────────────────────────────────┤
-│           ~/.declutter/                 │  ← All user data, persists across reinstalls
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│          Student (Electron Desktop App)       │  ← React + Tailwind UI, Vite dev server
+│          Gradio Demo (Hugging Face Spaces)    │  ← Public demo, self-contained
+├──────────────────────────────────────────────┤
+│          FastAPI (REST API)                   │  ← Each tool maps to an endpoint
+├───────────────────────┬──────────────────────┤
+│    tools/             │    core/              │  ← Business logic
+│  categorize_files,    │  index_manager,       │
+│  subject_classifier,  │  file_metadata,       │
+│  detect_duplicates,   │  paths, utils         │
+│  generate_report      │                       │
+├───────────────────────┴──────────────────────┤
+│          connectors/                          │  ← One per source
+│  local.py, gdrive.py                          │
+├──────────────────────────────────────────────┤
+│          ~/.declutter/                        │  ← All user data, outside the repo
+└──────────────────────────────────────────────┘
 ```
+
+**Electron IPC:** The Electron main process (`electron/main.js`) starts the FastAPI server as a child process, exposes IPC handlers (open file in Finder/Explorer), and proxies API calls via `electron/preload.js` → `contextBridge`.
 
 ---
 
 ## 4. Connector Architecture
 
-Every file source (local disk, Google Drive, Gmail, Dropbox) implements the same interface defined in `connectors/base.py`:
+Every file source implements the same interface defined in `connectors/base.py`:
 
 ```python
 class SourceConnector(ABC):
     source_id: str              # e.g. "local", "gdrive:school", "gdrive:personal"
     def scan() -> list[FileMetadata]
-    def trash(file_id) -> bool
-    def untrash(file_id) -> bool
-    def permanent_delete(file_id) -> bool
 ```
 
 | File | Source |
 |------|--------|
 | `connectors/local.py` | Local filesystem — wraps `scan_folder` |
 | `connectors/gdrive.py` | Google Drive — one instance per account |
-| `connectors/gmail.py` | Gmail attachments (future) |
-| `connectors/dropbox.py` | Dropbox (future) |
 
 **Adding a new source = one new file. Core pipeline never changes.**
+
+`gdrive.py` also exposes:
+- `get_file_text(file_id, mime_type, max_chars, ext)` — download first N chars for Group B classification
+- `get_file_bytes(file_id)` — download full image bytes for Group C Vision classification
 
 ---
 
 ## 5. Multi-Source Index
 
-All sources share a single `~/.declutter/index.json`. Each entry is tagged with its source:
+Each source has its own JSON file in `~/.declutter/`. They are merged at report time:
+
+| File | Source |
+|------|--------|
+| `local_index.json` | Local filesystem |
+| `gdrive_school_index.json` | Google Drive, school account |
+| `gdrive_personal_index.json` | Google Drive, personal account |
+
+Each entry is tagged with its source:
 
 ```json
 {
-  "files": {
-    "/Users/student/Documents/bio_notes.pdf": {
-      "source": "local",
-      "name": "bio_notes.pdf",
-      "md5": "abc123",
-      "duplicate_of": "gdrive:school/1aBcDeFgHiJk"
-    },
-    "gdrive:school/1aBcDeFgHiJk": {
-      "source": "gdrive:school",
-      "name": "bio_notes.pdf",
-      "md5": "abc123",
-      "duplicate_of": null
-    }
+  "/Users/student/Documents/bio_notes.pdf": {
+    "source": "local",
+    "name": "bio_notes.pdf",
+    "md5": "abc123",
+    "category": "biology",
+    "confidence_score": 1.0,
+    "classification_group": "A",
+    "manually_set": false,
+    "duplicate_of": "gdrive:school/1aBcDeFgHiJk"
+  },
+  "gdrive:school/1aBcDeFgHiJk": {
+    "source": "gdrive:school",
+    "name": "bio_notes.pdf",
+    "md5": "abc123",
+    "category": "biology",
+    "web_view_link": "https://drive.google.com/file/d/1aBcDeFgHiJk/view"
   }
 }
 ```
@@ -225,13 +110,10 @@ All sources share a single `~/.declutter/index.json`. Each entry is tagged with 
 - `"local"` — local filesystem
 - `"gdrive:school"` — Google Drive, school account
 - `"gdrive:personal"` — Google Drive, personal account
-- `"gmail:school"` — Gmail (future)
 
-**Drive file path convention:** `gdrive:<account>/<file_id>`
-- e.g. `gdrive:school/1aBcDeFgHiJk`
-- Single slash — double slash is collapsed by Python's `Path()`
+**Drive file path convention:** `gdrive:<account>/<file_id>` — e.g. `gdrive:school/1aBcDeFgHiJk`
 
-**This naming convention is set in stone once Drive data enters the index — cannot be changed without a migration.**
+**Cross-source leakage guard:** `update_index_with_scan` filters incoming data to the current `source_id` before merging, preventing school Drive entries from appearing in the personal Drive index.
 
 ---
 
@@ -242,83 +124,64 @@ All sources share a single `~/.declutter/index.json`. Each entry is tagged with 
 - Stored at `~/.declutter/credentials.json` — never committed to git
 - Student's OAuth token saved to `~/.declutter/drive_accounts/<account_name>.json` after browser login
 - Token refreshes silently when expired
+- **Logout preserves the index** — reconnecting restores the account without rescanning
 
 ### Multiple Accounts
-Students commonly have two Google accounts (school + personal):
-```bash
-declutter drive-login school      # browser opens → log in with school@schoolname.edu
-declutter drive-login personal    # browser opens → log in with personal@gmail.com
+Students commonly have two Google accounts (school + personal). The Settings modal in the desktop app lets them connect both:
+
+```
+Settings → Connect School Drive  → browser popup → log in → token saved
+         → Connect Personal Drive → browser popup → log in → token saved
 ```
 
-### Google API Scope Decision
-**We use the minimum scopes needed:**
+The settings modal polls the popup until it closes to detect OAuth completion.
 
+### Google API Scopes
 ```python
 SCOPES = [
-    "https://www.googleapis.com/auth/drive.readonly",  # scan files
-    "https://www.googleapis.com/auth/drive.file",       # create shortcuts only
+    "https://www.googleapis.com/auth/drive.readonly",  # scan files, download for classification
 ]
 ```
 
-**Why not full `drive` scope:**
-- Full Drive scope triggers heavy Google OAuth verification scrutiny
-- `readonly` + `drive.file` are non-sensitive — significantly easier to verify
-- Aligns with non-destructive design philosophy
-
-### Non-Destructive Design (Shortcut Approach)
-Instead of moving or deleting files, the app creates **Drive shortcuts** (symlinks) in an organised folder structure:
-
-```
-My Drive/
-  Organised by Declutter/
-    Biology/
-      → Bio Notes.pdf        (shortcut to original)
-      → Cell Structure.pdf   (shortcut to original)
-    Math/
-      → Calc Test 2.pdf      (shortcut to original)
-```
-
-- Original files are never touched
-- Students get an organised view without risk
-- Duplicates are reported, not deleted — student decides manually
-- Shortcut creation uses `drive.file` scope (files the app creates)
+`drive.readonly` is a non-sensitive scope — significantly easier to pass Google OAuth verification than full `drive` scope.
 
 ### MD5 Without Downloading
-Drive API returns `md5Checksum` for free per file — no download needed. This enables cross-source duplicate detection:
-- Local file MD5 computed by reading disk
+Drive API returns `md5Checksum` per file for free — no download needed for duplicate detection:
+- Local file MD5 computed by reading disk (incremental — only recomputed when `modified_at` changes)
 - Drive file MD5 fetched from API at scan time, stored in index
-- `detect_duplicates` uses whichever is available
-
-### Google Verification Path
-- **Development / small rollout:** Add up to 100 Gmail addresses as test users manually — no verification needed
-- **School rollout (recommended):** School IT admin adds app to Google Workspace — all `@schoolname.edu` accounts work automatically, bypasses public verification
-- **Public release:** Submit for OAuth verification — requires privacy policy, homepage, and Google review (1-4 weeks)
 
 ---
 
 ## 7. Staging & Safe Delete
 
-All deletions are two-stage — recoverable first, permanent only on explicit confirmation.
+All local deletions are two-stage — recoverable first, permanent only on explicit confirmation.
 
 | Action | Local files | Drive files |
 |--------|-------------|-------------|
-| Safe delete | Move to `~/.declutter_staging/` | `files.trash()` — recoverable 30 days |
-| Recover | `staging restore` → moves back | `staging restore` → calls `untrash()` |
-| Permanent | `staging empty` → `unlink()` | `staging empty` → `files.delete()` |
+| Safe delete | Move to `~/.declutter_staging/` | Guided — app shows link to open in Drive |
+| Recover | Move back from staging | Undo in Drive manually |
+| Permanent | `staging empty` → `unlink()` | Student deletes in Drive manually |
 
-Both local and Drive entries are logged in `staging_log.json` with a `source` field. The `staging show/restore/empty` commands work uniformly across both.
+Drive files use a guided flow (student opens file in Drive and moves to Trash themselves) because `drive.readonly` scope does not permit writes or deletes.
 
 ---
 
 ## 8. Subject Classification Pipeline
 
-Three groups run in order. Each group only runs if the previous group did not reach high confidence.
+Three groups run in order. Each group only runs if the previous group did not reach high confidence. Files are processed concurrently (`ThreadPoolExecutor`, max_workers=4).
+
+**Thresholds:**
+```python
+HIGH_CONFIDENCE = 0.9   # Groups A/B must reach this to skip Gemma
+MIN_SCORE_A     = 1     # Group A: at least 1 keyword hit required
+MIN_SCORE       = 4     # Groups B+: at least 4 total keyword points required
+```
 
 ---
 
 ### Group A — Metadata only (always runs, no file read)
 
-Scores folder names + filename against the seed map and expanded map.
+Scores folder names + filename against the keyword map.
 
 ```
 score_text(folder_names + filename) → {subject: score}
@@ -329,31 +192,25 @@ confidence = winner_score / total_score
 - Multi-word phrase match (e.g. "climate change") → 2 points
 - Single-word keyword match (e.g. "biology") → 1 point
 - Each unique keyword capped at 3 points (prevents repetition bias)
-- Tied scores → confidence capped at 0.3 → next group runs
+- Tied scores → ambiguous → Group C runs regardless of confidence
 
-**Thresholds:**
-```
-confidence ≥ 0.7  → done (high confidence)
-confidence ≥ 0.4  → try Group B
-confidence < 0.4  → skip to Group C
-scores all zero   → skip to Group C
-```
+**Drive files:** path is an opaque file ID — the actual filename from the index entry is used.
 
-**Drive files:** path is an opaque file ID — the actual filename from the index entry is used instead.
+If `confidence >= 0.9` AND `not ambiguous` AND `total_score >= 1` → classification complete (Group A).
 
 ---
 
 ### Group B — Content keyword scan (local text files + Drive files)
 
-Reads first 500 chars → scores against seed map + expanded map.
-If 0.4 ≤ confidence < 0.7 → tries 2000 chars.
+Reads first 500 chars → scores against keyword map. If confidence < threshold, retries with 2000 chars.
 
 ```
-score_text(first 500 chars) → confidence
-  ≥ 0.7 → done
-  ≥ 0.4 → try 2000 chars → done if ≥ 0.4
-  < 0.4 → Group C
+score_text(first 500 chars)  → confidence ≥ 0.9? → done
+                               → try 2000 chars   → confidence ≥ 0.9? → done
+                               → else Group C
 ```
+
+Supported extensions: `.txt .md .pdf .doc .docx .rtf .ppt .pptx .html .htm .csv`
 
 **Local files:** reads directly from disk into memory.
 
@@ -361,43 +218,55 @@ score_text(first 500 chars) → confidence
 - Google Workspace files (Docs, Slides) → exported as `text/plain`
 - Regular files (PDF, DOCX, TXT) → downloaded as binary, decoded as UTF-8
 
-**Privacy:** Drive content is never stored, logged, or sent to any third party. It exists in process memory only for the duration of classification, then is discarded.
+**Privacy:** Drive content is never stored, logged, or sent to any third party during Groups A/B. It exists in process memory only for the duration of classification.
 
-**Skipped for:** media files (.jpg, .mp4, .mp3, etc.) — content reading has no value.
-
----
-
-### Group C — Semantic similarity via sentence-transformers
-
-Runs when Groups A and B both fail to reach medium confidence.
-Uses `all-MiniLM-L6-v2` to compute cosine similarity between file content and subject descriptions built from the seed map keywords.
-
-```
-text_embedding ←→ subject_description_embeddings
-→ picks subject with highest cosine similarity
-→ always returns a subject (never falls through)
-→ saves new keywords to expanded map if confidence > 0.5
-```
-
-**Local files:** reads first 2000 chars from disk.
-**Drive files:** same transiently downloaded content as Group B.
-**Media files:** skipped (no text content).
-
-Model is loaded once and cached for the session — first call takes ~5–10 seconds.
+If `confidence >= 0.9` AND `not ambiguous` AND `total_score >= 4` → classification complete (Group B).
 
 ---
 
-### Ollama fallback (when sentence-transformers unavailable)
+### Group C — Gemma AI arbitration (text files)
 
-If `sentence-transformers` is not installed, Ollama (gemma3:4b) is used as Group C fallback.
-Skipped for media files. When Ollama classifies with confidence ≥ 0.85, new keywords are saved to the expanded map.
+Runs when Groups A and B both fail to reach high confidence. Uses chain-of-thought prompting: document type → student task → class match → decision.
+
+**Returns:** `(subject, confidence, also_could_be)` — runner-up shown in UI when confidence < 0.75.
+
+#### Text path — Gemma 3 via Ollama (primary, fully local)
+- Model: `gemma3:4b` via Ollama
+- Runs entirely on-device — text content never leaves the machine
+- File content (up to 2000 chars) + merged keyword scores from Groups A/B passed as context
+- Exponential backoff on errors; falls back to Google AI API if Ollama unavailable
+
+#### Text path — Gemma 4 via Google AI API (fallback)
+- Model: `gemma-4-26b-a4b-it` (26B params, 4B active per inference — MoE)
+- Used when Ollama is not running or returns an error
+- Accessed via `google-genai` Python SDK (`from google import genai`)
+- Rate limit: 1,500 req/day, 30 RPM (free tier, no auto-charge on exceeding)
+- Exponential backoff on 429 (rate limit), 500 (internal error), and quota errors
+
+**Privacy note:** When Ollama is unavailable, up to 2000 chars of file text are sent to the Google AI API. No PII scrubbing is currently applied before this fallback — production deployment should add a scrubbing step for FERPA/COPPA compliance.
+
+---
+
+### Group C_visual — Gemma 4 Vision (image files)
+
+Triggered for `.jpg .jpeg .png .gif .bmp .webp` files instead of the text Group C path.
+
+- Group A metadata scores used to seed candidate subjects
+- **Local images:** file bytes read directly from disk
+- **Drive images:** downloaded via `get_file_bytes()` before classification (full image, not preview)
+- Image bytes + classification prompt sent to `gemma-4-26b-a4b-it` via Google AI API
+- Can classify handwritten notes, whiteboard photos, scanned worksheets
+- Falls back to `"media"` if model unavailable or image shows no academic content
+
+**Known performance issue:** Full image bytes are sent without resizing. iPhone photos (5–10 MB) cause slow uploads and 2+ minute classification times for small batches. Fix: resize to max 1024px with Pillow `thumbnail()` before sending.
+
+Audio/video files (`.mp4 .mov .mp3 .wav` etc.) always resolve to `"media"` — no model called.
 
 ---
 
 ### Final fallback — extension map
 
-If all groups fail (empty content, media file, connection error), the file falls back to the extension-based `CATEGORY_MAP` in `utils.py`:
-`.pdf → documents`, `.jpg → images`, `.mp4 → videos`, etc.
+If all groups fail (empty content, media file, connection error), the file falls back to `CATEGORY_MAP` in `utils.py`: `.pdf → documents`, `.jpg → images`, `.mp4 → videos`, etc.
 
 ---
 
@@ -405,27 +274,16 @@ If all groups fail (empty content, media file, connection error), the file falls
 
 | Field | Description |
 |-------|-------------|
-| `category` | Classified subject (e.g. "biology", "math") |
-| `confidence_score` | 0.0–1.0 ratio from scoring (0.0 for Group C/Ollama) |
-| `classification_group` | Which group classified it: "A", "B", "C", "ollama", "fallback" |
+| `category` | Classified subject (e.g. "biology", "math") or personal category |
+| `confidence_score` | 0.0–1.0 ratio from keyword scoring (0.0 for Group C/Gemma) |
+| `classification_group` | Which group classified it: "A", "B", "C", "C_visual", "extension", "fallback" |
+| `also_could_be` | Runner-up subject from Gemma (Group C/C_visual only, shown in UI) |
 | `manually_set` | `true` if student corrected — pipeline never overwrites this |
-| `categorised_modified_at` | Timestamp when last categorised — used to skip unchanged files |
-
----
-
-### Category sources
-
-| Source | Description |
-|--------|-------------|
-| **Seed map** (`utils.py`) | ~20 subjects, ~300 keywords. Fixed. Your daughter maintains this. |
-| **Expanded map** (`~/.declutter/*_expanded_map.json`) | Auto-learned keywords from Groups C and Ollama. Grows over time. One file per source. |
-| **Personal categories** (V2) | Student-created categories (e.g. "AP Literature", "Drama"). Stored in Drive appdata. |
+| `categorised_modified_at` | `modified_at` value at last classification — used to skip unchanged files |
 
 ---
 
 ### Incremental categorisation
-
-Files are only re-categorised when necessary:
 
 | Condition | Action |
 |-----------|--------|
@@ -436,399 +294,40 @@ Files are only re-categorised when necessary:
 
 ---
 
-### Planned: Multimodal classification (Tier 2)
-
-Current pipeline is text-only. Images and video fall back to the extension map.
-
-| Type | Plan |
-|------|------|
-| Images | LLaVA via Ollama (free, local) or Claude API |
-| Video | Extract 3–5 frames with `ffmpeg`, pass to LLaVA or Gemini |
-
----
-
-## 8a. Classification Accuracy — Current State and Improvement Options
-
-### Current accuracy profile (2026-04-22)
-
-After a fresh scan of 202 Drive files:
-
-| Group | Files | Avg confidence | Notes |
-|-------|-------|---------------|-------|
-| A (metadata) | ~52 | 1.0 | High confidence — clear keyword match in filename/folder |
-| B (keyword scan) | ~70 | 0.88 | Good — content had clear keyword signals |
-| C (semantic) | ~72 | 0.14 | Low raw scores — model picks best match but isn't certain |
-| fallback | ~8 | 0.0 | Media files or empty content |
-
-**The core problem with Group C:**
-`all-MiniLM-L6-v2` is a *similarity* model, not a *classifier*. It returns cosine similarity scores like `[0.45, 0.30, 0.28...]` across 20 subjects. The winner is usually correct, but the raw score of `0.45` is mistakenly stored as the confidence. The model has no concept of "I'm not sure" — it always picks something. Low raw scores do not mean wrong answers, but they make the confidence metric meaningless.
-
----
-
-### Option 1 — Softmax temperature scaling (quick fix, no new model)
-
-Convert raw cosine similarities into a proper probability distribution using softmax before selecting the winner:
-
-```python
-import torch.nn.functional as F
-probs = F.softmax(similarities * 10, dim=0)  # temperature=10
-best_score = float(probs[probs.argmax()])
-```
-
-- Similarities `[0.45, 0.30, 0.28...]` → probabilities `[0.62, 0.12, 0.09...]`
-- Winner stays the same; confidence becomes meaningful
-- Same model, one line change
-- **Tradeoff:** Does not improve which subject is chosen — only how confident we appear to be
-
----
-
-### Option 2 — Zero-shot NLI classifier (better accuracy, heavier model)
-
-Replace cosine similarity with a Natural Language Inference (NLI) model trained to answer "does this text match this description?" Each subject becomes a hypothesis:
-
-```
-hypothesis: "This document is about biology."
-premise:    <file content>
-→ model outputs: entailment probability per subject
-```
-
-Recommended models:
-| Model | Size | Speed | Accuracy |
-|-------|------|-------|----------|
-| `cross-encoder/nli-deberta-v3-small` | ~180 MB | Medium | High |
-| `facebook/bart-large-mnli` | ~1.6 GB | Slow | Very high |
-| `typeform/distilbert-base-uncased-mnli` | ~250 MB | Fast | Medium |
-
-- Outputs true probabilities (sum to 1) — confidence is genuinely meaningful
-- No retraining needed — works with our existing subject descriptions
-- **Tradeoff:** Slower than MiniLM; bart-large needs significant RAM
-
----
-
-### Option 3 — Fine-tuned classifier (best long-term accuracy)
-
-Train a small text classifier on labeled student files. After users correct misclassifications via the UI (`manually_set=True`), those corrections become training data:
-
-```
-correction: "Individual meetings.docx" → "writing" (student corrected from "social_studies")
-correction: "Frozen in Time.docx"      → "reading"  (student corrected from "writing")
-```
-
-After N corrections per subject, fine-tune a lightweight classifier (e.g. `distilbert-base-uncased`) on the accumulated data. This model replaces Group C.
-
-- **Best accuracy** — trained on actual student files
-- **Gets better over time** — more corrections → better model
-- **Privacy consideration:** training data must be anonymised before any crowdsourcing
-- **Tradeoff:** Needs ~50–100 corrections per subject before meaningful improvement; cold-start problem
-
----
-
-### Option 4 — Improved seed map + Group B first (pragmatic, no new model)
-
-Most misclassifications happen because Group B doesn't run (file content had no keyword hits) and Group C guesses. The seed map now has ~300 keywords across 20 subjects. Adding subject-specific phrases that appear frequently in student documents would push more files from Group C → Group B:
-
-Examples of phrases to add:
-- `"thesis statement"`, `"body paragraph"` → writing
-- `"supply and demand"`, `"opportunity cost"` → economics
-- `"checks and balances"`, `"separation of powers"` → social_studies
-- `"mitochondria is the powerhouse"`, `"krebs cycle"` → biology
-
-**Who maintains this:** Your daughter — she knows what phrases appear in her actual class documents.
-
-- Zero new dependencies
-- Immediate accuracy improvement for well-represented subjects
-- **Tradeoff:** Manual effort; doesn't help for genuinely ambiguous content
-
----
-
-### Option 5 — Confidence-based "needs review" flag (product solution)
-
-Instead of trying to fix the model, surface low-confidence Group C files to the student:
-
-```json
-{
-  "category": "social_studies",
-  "confidence_score": 0.12,
-  "classification_group": "C",
-  "needs_review": true
-}
-```
-
-The UI shows a badge (⚠️ or 🔵) on low-confidence files. Students correct wrong labels with one click → feeds Option 3 over time.
-
-This turns classification uncertainty from a bug into a feature: the app admits when it's unsure rather than pretending to be confident.
-
----
-
-### Recommended path
-
-| Phase | Action | Effort | Impact |
-|-------|--------|--------|--------|
-| Now | Expand seed map with common student phrases (Option 4) | Low | Medium |
-| Now | Add `needs_review` flag for Group C confidence < 0.25 (Option 5) | Low | High (product) |
-| UI | Surface `needs_review` files with one-click correction | Medium | High |
-| Later | Softmax temperature scaling to fix confidence metric (Option 1) | Trivial | Low-Medium |
-| Tier 2 | Collect corrections → fine-tune classifier (Option 3) | High | Very high |
-
-The seed map expansion (Option 4) is the highest-value immediate action. Your daughter can add phrases she sees in her own class notes — she is the domain expert.
-
----
-
-## 8b. Gemma 4 Classification Pipeline — Current Implementation (2026-05-08)
-
-> Replaces the sentence-transformers + expanded map approach documented in Section 8.
-
-### Model Selection
-
-| Path | Text classification | Visual classification |
-|------|--------------------|-----------------------|
-| **Google AI API** (web app, Kaggle) | `gemma-4-26b-a4b-it` — Gemma 4 MoE, 4B active params per inference | `gemma-4-26b-a4b-it` — same model, multimodal confirmed |
-| **Local Ollama** (desktop fallback) | `gemma3:4b` — fast, no cost, no internet | Not available locally (gemma4:31b needs ~20 GB RAM) |
-
-Both `gemma-4-26b-a4b-it` and `gemma-4-31b-it` are available via the Google AI API free tier (1,500 req/day, 30 RPM hard cap — no auto-charge on exceeding).
-
-**Why `gemma-4-26b-a4b-it` for both text and vision:**
-- Confirmed multimodal — reads handwritten notes, whiteboards, scanned worksheets
-- Only 4B parameters active per inference (MoE architecture) → fast and cost-efficient
-- No need to split across two models
-
-**Production model selection** (when Gemma 3 becomes available on Google AI API):
-- Text classification → Gemma 3 (sufficient accuracy, lower cost)
-- Visual classification → Gemma 4 (required for multimodal — no previous generation supported this)
-- One-line change in `GEMMA_GOOGLE_MODEL` constant when API adds Gemma 3
-
----
-
-### Group C — Gemma (updated)
-
-Replaces sentence-transformers entirely. Called when Groups A+B confidence < 0.9 or total keyword score < 4.
-
-**Text files:**
-- Narrows to top-2 keyword candidates from Groups A+B scores
-- Chain-of-thought prompt: document type → student task → class match → decision
-- Returns `(subject, confidence, also_could_be)` — runner-up shown in UI when confidence < 0.75
-- Exponential backoff on 429 rate limit errors, 10-minute total max
-
-**Image files (Group C_visual — new):**
-- Triggered for `.jpg`, `.jpeg`, `.png`, `.gif`, `.bmp`, `.webp`
-- Group A metadata scores used to seed candidate list
-- Image bytes sent to Gemma 4 Vision alongside classification prompt
-- Falls back to `"media"` if model unavailable or image shows no academic content
-
----
-
-### Deployment Options — Cost Analysis (to deliberate)
-
-**Option A — Google AI API only (current setup)**
-- Everything routes through `gemma-4-26b-a4b-it` via Google AI API
-- No VM or Ollama required
-- Cost: free tier covers ~1,500 req/day; paid tier pricing TBD
-- Pros: simple, no infrastructure to manage
-- Cons: rate limits, network latency (~3-5s/file), internet required
-
-**Option B — VM with Ollama for text, Google AI API for vision only**
-- VM (e.g. GCP `n2-standard-4`) runs Ollama with `gemma3:4b` for text
-- Google AI API called only for image files (fewer calls, lower API cost)
-- VM cost: ~$0.19/hr on-demand — use Cloud Run or scale-to-zero to avoid 24/7 cost
-- Pros: fast text classification, lower API spend at scale, offline-capable for text
-- Cons: VM management overhead, vision still needs internet
-- Best for: high-volume production with many users classifying many text files
-
-**TODO: Cost comparison**
-- Estimate average files per student per scan, % that reach Group C, % that are images
-- Price out Google AI API paid tier per 1,000 requests for `gemma-4-26b-a4b-it`
-- Compare against VM compute cost at projected user volume
-- Decision threshold: if >X students or >Y files/day, Option B is cheaper
-
----
-
-## 8c. Cloud Run + Firestore + Drive AppDataFolder — Scan & Report Flow
-
-> Last updated: 2026-04-30
-
-### Data ownership rule: container disk is a cache, not source of truth
-
-| Data | Source of truth | Container disk role |
-|------|----------------|---------------------|
-| OAuth token | Firestore `users/{uid}/tokens/{account}` | Cache — restored from Firestore before each scan |
-| File index | Drive appDataFolder `claire_index.json` | Cache — restored on login or lazily on first report |
-| Scan job status | Firestore `scan_jobs/{job_id}` | Not stored on disk |
-| Blacklist / settings | Container disk only ⚠️ | Lost on restart — pending fix (store in appDataFolder) |
-
----
-
-### Scan flow step by step
-
-```
-1. User clicks "Scan Now"
-   ↓
-   Frontend (Dashboard.jsx)
-   POST /scan   (once per connected Drive account, e.g. school + personal)
-   ↓
-2. POST /scan handler (scan.py) — runs on Cloud Run container A
-   a. _restore_token_to_disk(uid, account)
-      Firestore: users/{uid}/tokens/school → container disk ~/.declutter/drive_accounts/school.json
-   b. scan_state.create_job()
-      Firestore: scan_jobs/{job_id} = { status: "running", created_at: "...", progress: null }
-   c. Register background task _run_drive_scan(job_id, account)
-   d. Return { job_id } immediately to frontend
-   ↓
-3. _run_drive_scan — background thread, same container A
-   a. connector.scan(on_progress=...)
-      Drive API: list files page by page (1000/page)
-      After each page → set_progress(job_id, count, total=0, "")
-        → Firestore update: scan_jobs/{job_id}.progress.files_scanned = N
-   b. update_index_with_scan(scanned, source_id)
-      Writes ~/.declutter/gdrive_school_index.json on container disk
-   c. categorize_files(index) — keyword + semantic classification
-   d. detect_duplicates(index) — MD5 matching across all sources
-   e. save_index(index, source_id)
-      Writes ~/.declutter/gdrive_school_index.json (updated)
-   f. connector.write_appdata_file("claire_index.json", index)
-      Drive API → writes to school Drive's appDataFolder (hidden, only this app sees it)
-   g. scan_state.set_done(job_id, report, warnings)
-      Firestore: scan_jobs/{job_id} = { status: "done", result: {...} }
-
-   If any step throws:
-      scan_state.set_error(job_id, str(e))
-      Firestore: scan_jobs/{job_id} = { status: "error", error: "..." }
-   ↓
-4. Frontend polls GET /scan/status/{job_id} every 1 second
-   a. scan_state.get_job(job_id)
-      Reads Firestore: scan_jobs/{job_id}
-      If status="running" AND age > 5 minutes → auto-expire:
-        Firestore update: status="error", error="Scan timed out"
-        Returns { status: "error" } — frontend navigates to dashboard
-   b. Frontend aggregates progress across all jobs:
-      total=0, filesScanned>0 → "1,247 files found…" + pulse bar (Drive pagination in progress)
-      total>0               → "X of Y files — N%" + progress bar (local scan)
-      all jobs done/error   → navigate to /dashboard
-      after 300 polls (5 min) → force navigate to /dashboard
-   ↓
-5. Dashboard loads — GET /report, GET /report?source=gdrive:school, etc.
-   a. _ensure_drive_indexes(uid) — lazy restore
-      Queries Firestore for all connected accounts for this uid
-      For each account:
-        index file on container disk? → skip (use disk cache)
-        index file missing?          → restore:
-          _restore_token_to_disk(uid, account) → token from Firestore to disk
-          connector.read_appdata_file("claire_index.json") → Drive appDataFolder to disk
-   b. load_combined_index()
-      Reads from container disk — always fast after step (a) ensures files exist
-   c. Filter by source, generate report/organised view/duplicates
-```
-
----
-
-### Container restart scenario
-
-```
-Container A runs scan → saves index to disk + Drive appDataFolder → Firestore: status=done
-Container A dies (Cloud Run scales to zero)
-Container B spins up (new request)
-GET /report hits container B → disk is empty
-  → _ensure_drive_indexes() → reads Firestore for accounts → restores token + index from appDataFolder
-  → load_combined_index() reads from disk (now populated)
-  → report served correctly
-```
-
----
-
-### Stale job scenario (container dies mid-scan)
-
-```
-Container A starts scan → Firestore: status=running
-Container A crashes before set_done is called
-Container B spins up
-GET /scan/status/{job_id} hits container B
-  → get_job() reads Firestore → status=running, age=6 minutes > 5 minute threshold
-  → auto-expires: Firestore update status=error
-  → returns { status: "error" }
-Frontend sees error → navigates to dashboard
-User can scan again — new job, clean state
-```
-
----
-
-### Disconnect flow
-
-```
-DELETE /drive/{account_name}
-  1. connector.delete_appdata_file("claire_index.json")
-     Drive API → deletes index from Drive appDataFolder
-  2. connector.logout()
-     Revokes OAuth token with Google + deletes token from container disk
-  3. Firestore: delete users/{uid}/tokens/{account}
-  4. purge_source_from_index(source_id)
-     Deletes ~/.declutter/gdrive_school_index.json from container disk
-Result: reconnecting forces a fresh scan — no stale data carried over
-```
-
----
-
-### Login / restore flow
-
-```
-App.jsx on sign-in → for each connected account (from Firestore):
-  POST /drive/{account}/restore
-    _restore_token_to_disk(uid, account)   → Firestore → disk
-    connector.read_appdata_file(...)        → Drive appDataFolder → disk
-This primes the container disk cache so the first report request is fast
-```
+### Model selection rationale
+
+| Path | Model | When used |
+|------|-------|-----------|
+| Text classification (primary) | `gemma3:4b` via Ollama | Ollama running locally |
+| Text classification (fallback) | `gemma-4-26b-a4b-it` via Google AI API | Ollama unavailable |
+| Image classification | `gemma-4-26b-a4b-it` via Google AI API | Always (no local vision model available) |
+
+**Why Gemma 3 locally for text:** Fast (~1–2s/file), free, fully private — text content never leaves device.
+**Why Gemma 4 Vision for images:** Previous Gemma generations are text-only. Gemma 4 is the first Gemma with confirmed multimodal capability. The 26B MoE model with 4B active params is fast and cost-efficient on the free API tier.
 
 ---
 
 ## 9. Duplicate Detection
 
-### Detection levels
+### Detection levels implemented
 
-| Level | Method | Local | Drive | Cost |
-|-------|--------|-------|-------|------|
-| 1a | MD5 exact match | ✅ | ✅ Free from API | Zero |
-| 1b | Filename similarity (fuzzy string match) | ✅ | ✅ Free from API | Zero |
-| 1c | File size filter (±10%) | ✅ | ✅ Free from API | Zero |
-| 2 | Text extraction + difflib/Jaccard (>90% match) | ✅ | ❌ Needs download | Low |
-| 3 | Simhash fingerprint (distance < 3) | ✅ | ❌ Needs download | Low |
-| 4 | Ollama embeddings + cosine similarity | ✅ | ❌ Needs download | High |
+| Level | Method | Local | Drive |
+|-------|--------|-------|-------|
+| 1a | MD5 exact match | ✅ | ✅ Free from API |
+| 1b | Filename similarity (fuzzy string match) | ✅ | ✅ |
+| 1c | File size filter (±10%) | ✅ | ✅ |
 
-**Why Drive files can't use Levels 2-4:**
-Drive API with `drive.readonly` returns metadata only — name, size, MD5, webViewLink.
-Reading file content requires downloading the file, which is slow, uses bandwidth, and hits API quota.
+**Why Drive files can't use deeper levels:**
+`drive.readonly` returns metadata only — name, size, MD5, webViewLink. Reading file content requires downloading, which is slow and hits API quota.
 
-### Default scan (fast, free, works on all sources)
-Levels 1a + 1b + 1c run automatically on every scan:
+### Detection logic
 ```
 Same MD5                      → exact duplicate (certain)
 Similar name + same size      → very likely duplicate (flag for review)
 Similar name + size ±10%      → possible duplicate (show to student)
 ```
 
-### Deep scan (opt-in, local files only)
-Student explicitly triggers — levels 2 + 3 run on local files:
-- `pdfplumber` extracts text from PDFs
-- `python-docx` extracts text from Word docs
-- `difflib.SequenceMatcher` compares text — ratio > 0.90 = near duplicate
-- `simhash` fingerprint for fast comparison at scale
-- Catches: essay_v1.docx vs essay_v2.docx, PDF export of a Word doc
-
-### Confidence score shown to student
-Student never sees "Level 2" or "simhash" — just a confidence indicator:
-```
-bio_notes.pdf  ←→  Bio Notes Final.pdf
-★★★★★ Exact copy (identical content)
-★★★★☆ Very similar (95% match — probably same essay)
-★★★☆☆ Similar (80% match — related content)
-```
-
-### Planned pipeline build order
-1. Level 1a — done ✅
-2. Level 1b + 1c — filename/size signals (small addition to detect_duplicates.py)
-3. Level 2 — text extraction + difflib (needs pdfplumber + python-docx)
-4. Level 3 — simhash (needs simhash library)
-5. Level 4 — Ollama embeddings (already have Ollama, opt-in only)
-
-### Performance: incremental MD5 computation (implemented 2026-04-13)
-MD5 computation is incremental — local files are only read from disk when new or modified:
+### Performance: incremental MD5
 
 | File type | MD5 source | When recomputed |
 |-----------|-----------|-----------------|
@@ -836,306 +335,185 @@ MD5 computation is incremental — local files are only read from disk when new 
 | Local (new or modified) | Read from disk | When `modified_at` changes |
 | Drive | Stored in index from API | Never — Drive API provides it free |
 
-- `md5_computed_modified_at` stored alongside `md5` in the index
-- Duplicate matching always runs in full (cheap dict lookups) — a new file can duplicate anything already in the index
-- **Why:** Reading large local files (PDFs, videos) on every scan was wasteful; Drive MD5s were already free
-
 ---
 
 ## 10. Data Storage
 
-**Current: JSON files in `~/.declutter/`**
+**JSON files in `~/.declutter/`** (outside the repo — persists across reinstalls)
 
 | File | Contents |
 |------|----------|
 | `local_index.json` | Index of local files |
 | `gdrive_<name>_index.json` | Index per connected Drive account |
-| `local_expanded_map.json` | AI-learned keywords for local files |
-| `gdrive_<name>_expanded_map.json` | AI-learned keywords per Drive account |
 | `blacklist.json` | Folders excluded from scanning |
 | `staging_log.json` | Soft-deleted local files |
-| `credentials.json` | Google OAuth credentials for CLI (Desktop app type, never committed) |
-| `credentials_web.json` | Google OAuth credentials for API (Web app type, never committed) |
+| `credentials.json` | Google OAuth credentials (Desktop app type, never committed) |
+| `credentials_web.json` | Google OAuth credentials (Web app type, never committed) |
 | `drive_accounts/<name>.json` | Per-account OAuth tokens |
-
-**Planned: SQLite migration (before cloud sync)**
-- One `declutter.db` replaces all JSON files
-- Easier to sync, faster queries on large indexes, no cross-file consistency issues
-- `sqlite3` is built-in — no new dependencies
-- Deferred until Drive integration is working end-to-end in JSON first
-
-**Future option: SQLite on Google Drive for cross-device sync**
-SQLite is a single file, so it can live anywhere — including the user's Google Drive folder:
-```python
-# paths.py — one-line change when ready
-DATA_DIR = Path("~/Google Drive/My Drive/.declutter").expanduser()
-```
-- Google Drive desktop app syncs `declutter.db` automatically across Mac, Windows, Chromebook (Linux)
-- Student's organised view follows them across all devices
-- No server needed, no user database needed
-- Safe for solo use (one device at a time) — Drive desktop handles sync gracefully for small files
-- Risk: file corruption if two devices write simultaneously (unlikely for solo student use)
-
-**Phase 1:** Local `~/.declutter/` (current — build this first)
-**Phase 2 option:** Let user configure `DATA_DIR` via `settings.json` — they can point it to their Google Drive folder themselves. No code changes in the rest of the app.
 
 ---
 
 ## 11. Organised View
 
-### Design decision: separate from generate_report (decided 2026-04-13)
-`generate_report` stays lightweight — counts only, no file lists. This keeps it fast and suitable for the API layer.
+The React UI (`frontend/src/pages/OrganisedFiles.jsx`) shows files grouped by subject across all connected sources.
 
-A separate `generate_organised_view(index)` function will render files grouped by subject category:
+**Per file:**
+- Clickable: local files open in Finder/Explorer via Electron IPC (`shell:openFile`); Drive files open `web_view_link` in browser
+- Source badge (local / school / personal)
+- Duplicate badge (⚠️) when `duplicate_of` is set
+- `also_could_be` note when Gemma had a runner-up
 
-```python
-# tools/generate_organised_view.py (planned)
-def generate_organised_view(index: dict) -> dict:
-    """
-    Returns files grouped by category, sorted by size descending within each group.
-    Each file entry includes web_view_link so the UI can make them clickable.
-    """
-    # {
-    #   "Biology": [
-    #     { "name": "Bio Notes.pdf", "size_bytes": 204800, "source": "gdrive:school",
-    #       "path": "gdrive:school/1aBcDeFgHiJk", "web_view_link": "https://...",
-    #       "duplicate_of": null },
-    #     ...
-    #   ],
-    #   "Math": [ ... ],
-    # }
-```
+**Drag-and-drop reassignment:**
+- Student can drag a file to a different subject — sets `manually_set=true` in the index
+- Manual corrections are permanent — never overwritten by future scans
 
-### Student-managed categories (planned for UI)
-Students can customise their subject list:
-- **Add a category** — e.g. "Drama", "Economics", "Latin" (not in default SEED_MAP)
-- **Remove a category** — e.g. a student who doesn't take Music
-- **Rename a category** — e.g. "pe" → "Physical Education"
-- **Reassign a file** — drag a file from "other" to "Biology" manually
-
-How it works under the hood:
-- Custom categories stored in `settings.json` (planned) — adds to or overrides SEED_MAP
-- Manual file reassignments stored as `category_override` in the index entry — never overwritten by the classifier
-- `categorize_files` checks `category_override` first, before running the pipeline
-
-### What the UI needs from this
-- Each file shown as a clickable link:
-  - Local files → "Show in Finder" / "Show in Explorer"
-  - Drive files → `web_view_link` opens in browser
-- Duplicate badge shown inline (e.g. ⚠️ Duplicate)
-- Source badge per file (local / school / personal)
-- Sorted: subjects alphabetically, files by size descending within subject
-- "other" category shown last
-
-### CLI version (interim)
-Until the UI is built, the CLI renders this as a Rich table via `declutter report --organised` (planned).
+**Drive file size display:** Drive files without a local size show "Drive file" rather than a size, since size is not always returned by the API.
 
 ---
 
 ## 12. UI Design
 
-**Two-panel layout — one panel per source:**
+**Current implementation: React + Tailwind + Electron (desktop app)**
 
-```
-┌──────────────┬──────────────┬──────────────────┐
-│  My Computer │ School Drive │  Personal Drive  │
-│              │              │                  │
-│ Biology  12  │ Biology   8  │  Biology      3  │
-│ Math      7  │ Math      5  │  English      6  │
-│ English   3  │ English   9  │                  │
-│              │              │                  │
-│ Dupes: 4     │ Dupes: 4     │  Dupes: 1        │
-└──────────────┴──────────────┴──────────────────┘
-      Cross-source duplicates: 6 files found
-```
+| Page | Purpose |
+|------|---------|
+| `Onboarding.jsx` | First-run setup — select local folders, connect Drive accounts |
+| `Dashboard.jsx` | Scan trigger, progress, summary stats, Settings modal |
+| `OrganisedFiles.jsx` | Files grouped by subject, drag-and-drop, open files |
 
-- Panels are dynamic — one per connected Drive account, not hardcoded
-- Panels are read-only by default — student sees, then decides
-- Action row at bottom only appears when cross-source duplicates exist
-- Built with `st.columns()` in Streamlit — son can own this module
+**Settings modal (Dashboard.jsx):**
+- Connect / disconnect Google Drive accounts (school + personal)
+- OAuth flow: opens a popup window, polls until popup closes, then re-fetches accounts
+- Polled every 2 seconds while popup is open
 
-**Build order:** Streamlit first (fastest) → PyQt6 or Tauri later for polished desktop app. Business logic in `tools/` and `core/` stays unchanged regardless of UI framework.
-
----
-
-## 12. Gmail Integration (Tier 3)
-
-Gmail integration is intentionally deferred to Tier 3 — not a cleanup tool, but an AI reasoning layer.
-
-### What Gmail adds in Tier 3 (not cleanup)
-- "What's due this week?" → scans Gmail + Google Calendar for deadlines
-- "What did my teacher say about the history project?" → searches email threads by subject
-- "Summarise all feedback I've received this semester" → reads assignment return emails
-- Connects email context to Drive files — "the file my teacher mentioned in this email"
-
-### Why not Tier 1/2
-- Students don't feel email storage pain — school Gmail limits are generous
-- Large attachment cleanup has low value for a 15-year-old
-- Gmail's real value is **reasoning**, not **cleanup** — that needs the AI layer
-
-### APIs needed
-- `gmail.readonly` — read email threads and metadata
-- Google Calendar API — deadlines, reminders, assignment due dates
-- Claude API — reason across threads, summarise, extract deadlines
-
-### Architecture (Tier 3)
-```python
-# connectors/gmail.py — implements SourceConnector
-class GmailConnector(SourceConnector):
-    source_id = "gmail:school"
-    def scan() -> list[FileMetadata]  # email threads as structured data
-```
-- Same OAuth pattern as Drive: `declutter gmail-login school`
-- Token stored at `~/.declutter/gmail_accounts/school.json`
-- Email threads indexed alongside files — same unified index
-- Claude API reasons across Gmail + Drive + local files together
+**Gradio demo (`hf_space/app.py`):**
+- Self-contained Gradio app for public demo on Hugging Face Spaces
+- Syncs the same classifier files from the main repo
+- Uses Google AI API only (no Ollama) for simplicity in the demo environment
 
 ---
 
 ## 13. Product Tiers
 
-The product naturally grows into three tiers. Each tier is a complete product — not a feature gate.
-
 ---
 
-### Tier 1 — Digital Declutter (Current)
+### Tier 1 — Claire (Current — Hackathon Build)
+
 **Target:** High school students, parents, schools
 **Value:** Organised files, duplicate detection, space savings
 
 | Feature | Status |
 |---------|--------|
-| Subject classification (5-step pipeline) | ✅ Built |
+| Subject classification (3-group pipeline: A/B/Gemma) | ✅ Built |
 | Local file scanning + indexing | ✅ Built |
-| MD5 duplicate detection | ✅ Built |
+| Google Drive scan (school + personal) | ✅ Built |
+| MD5 duplicate detection (cross-source) | ✅ Built |
+| Image classification via Gemma 4 Vision | ✅ Built |
 | Staging / safe delete (local) | ✅ Built |
-| Google Drive scan (readonly) | ✅ Built |
-| Incremental categorisation + MD5 | ✅ Built |
-| Organised view CLI (report --organised) | ✅ Built |
-| FastAPI layer | Planned |
-| Streamlit UI | Planned |
-| SQLite migration | Planned |
-
-**Business model:** Free for students, paid for school IT deployment (storage savings = ROI)
+| Organised view with drag-and-drop reassignment | ✅ Built |
+| FastAPI REST layer | ✅ Built |
+| Electron + React desktop app | ✅ Built |
+| Gradio demo on Hugging Face Spaces | ✅ Built |
+| 146 pytest tests | ✅ Built |
+| Image resizing before Vision API call | ⚠️ Needed (see notes) |
+| PII scrubbing before cloud text fallback | ⚠️ Needed for production |
 
 ---
 
-### Tier 2 — AI Study Assistant (Premium Subscription)
-**Target:** Students serious about academic performance, parents who want their kids to do well
-**Value:** AI that knows your entire school life, helps you study, and keeps you on top of deadlines
+### Tier 2 — AI Study Assistant (Planned)
 
-Two tiers, clean story:
-- **Tier 1 (free/school IT):** organise, deduplicate, clean up — Drive + local
-- **Tier 2 (subscription):** AI study assistant — organise + understand + help me learn
+**Value:** AI that knows your entire school life, helps you study, keeps you on top of deadlines
 
-| Feature | What it does |
+| Feature | Description |
 |---------|-------------|
-| **Near-duplicate detection** | Catches essay_v1 vs essay_v2, PDF export of a Word doc |
-| **Image classification** | Photos of whiteboards, screenshots of slides → correct subject via LLaVA |
-| **Video classification** | Frame extraction + AI → "Science Project.mp4" → correct subject |
-| **Semantic search** | "Show my biology notes from last month" — finds by meaning not filename |
-| **File summarisation** | Any PDF or doc summarised on demand via Claude API |
-| **Subject tutor** | Quizzes student from their own notes — "test me on chapter 3" |
-| **Gmail integration** | School communication, teacher feedback, assignment returns |
-| **Google Calendar** | Due dates and reminders connected to files and subjects |
-| **Memory graph** | Connections between files, emails, topics, deadlines, people |
-| **Multi-step agent** | "Prepare me for tomorrow's exam" → finds notes + summarises + creates quiz |
-| **Timeline builder** | "Show everything related to my history essay" chronologically |
-| **Chat interface** | Natural language across all features — Ronit owns this module |
+| **Semantic search** | "Show my biology notes from last month" — LanceDB local vector DB |
+| **Study guide generation** | RAG over indexed files → Gemma generates subject-specific guide |
+| **Near-duplicate detection** | Catches essay_v1 vs essay_v2, PDF export of Word doc |
+| **Video classification** | Frame extraction + Gemma 4 Vision |
+| **Google Classroom** | Assignment due dates, course names, teacher feedback, grades |
+| **Google Calendar** | School events, exam schedule, project deadlines |
+| **Email digest** | Weekly summary: upcoming assignments, new feedback, suggested study topics |
+| **Gmail integration** | School-only emails (@school.edu domain), local Gemma 3 extraction |
 
-**Architecture requirements:**
-- SQLite → vector database (pgvector or ChromaDB) for embeddings
-- Background embedding pipeline — files embedded as they are indexed
-- Memory graph (nodes = files/emails/deadlines, edges = relationships)
-- Claude API for reasoning and summarisation
-- Ollama for local embedding generation (free, offline)
-- Multi-step agent via Claude Agent SDK
-- Gmail API + Google Calendar API
-
-### Two views in Tier 2
-
-**Student view:**
-- Files organised by subject across local + Drive
-- Duplicates flagged, space savings shown
-- "Help me study" — summarise notes, quiz me, semantic search
-- "What's due this week?" — deadlines from Gmail + Google Calendar
-- Chat interface for all of the above
-
-**Teacher view:**
-- All student submissions organised by assignment
-- Spot missing submissions at a glance
-- Flag duplicate submissions — academic integrity check
-- "Summarise feedback I've given this semester"
-- Assignment timeline — who submitted what and when
-
-**Teacher AI assistant (from their own content):**
-- "Generate a quiz from my chapter 3 notes" → pulls teacher's own Drive files
-- "Summarise last year's exam papers" → finds and summarises past papers
-- "Create an assignment brief based on my lesson plan" → drafts from existing content
-- "What topics haven't I covered yet this term?" → reasons across lesson plans + calendar
-- Years of accumulated content (past papers, rubrics, lesson plans) finally becomes searchable and useful
-
-**Why the teacher view matters for sales:**
-- Schools buy tools that help teachers, not just students
-- Academic integrity (duplicate detection) is a real pain point for schools
-- Teacher view turns Claire from a student tool into an institutional product
-- One school licence covers all students + all teachers → higher contract value
-
-**Why students and parents pay for this:**
-- Saves hours of study prep — AI does the organising, student does the learning
-- The value compounds — the longer they use it, the smarter it gets about their subjects
-- No other tool connects Gmail + Drive + Calendar + local files into one study layer
-- Parents see grades improve → retention is high
-
-**Pricing model:** Monthly subscription — Claude API costs scale with usage
+**LanceDB note:** Runs fully locally, fits the privacy-first design. Embeds all indexed files; on study guide request, retrieves top-k semantically similar files and feeds them into Gemma 3 as context.
 
 ---
 
-## 14. Chat Interface
+### Tier 3 — Web App Deployment (Planned)
 
-Natural language wrapper around existing tools — the face of Tier 2:
+**Target:** Schools deploying to Chromebook users (no desktop app install possible)
 
-- "What are my largest biology files?" → calls search + report
-- "Show duplicates in my school Drive" → calls detect_duplicates filtered by source
-- "Summarise my chemistry notes from this week" → file summarisation via Claude API
-- "What did my teacher email me about the history project?" → Gmail + Drive reasoning
-- "Test me on chapter 3 of my biology notes" → subject tutor
-- "What's due this week?" → Google Calendar + Gmail deadlines
-
-**Build path:**
-- Tier 1: no chat needed — UI buttons are enough for organise/clean up
-- Tier 2: full chat interface — Claude API routes natural language to the right tool
-
-Good module for Ronit to own — conversational UI is UX work, business logic stays in tools/
+| Component | Approach |
+|-----------|----------|
+| Gemma 3 text | EC2 `g4dn.xlarge` (GPU) or `t3.xlarge` (CPU) running Ollama — keeps text off third-party APIs |
+| Gemma 4 Vision | Google AI API — images only (fewer calls, acceptable for FERPA if image-only) |
+| Data residency | Specific AWS region for FERPA compliance |
+| Auth | OAuth tokens per student, stored server-side |
+| Storage | Per-student indexes in S3 or RDS |
 
 ---
 
-## 15. Build Order
+## 14. Build Order
 
-**Phase 1 — Tier 1 (current focus)**
-1. ~~Subject classification pipeline~~ ✅
+**Phase 1 — Tier 1 (complete)**
+1. ~~Subject classification pipeline (Groups A + B + C)~~ ✅
 2. ~~Connector architecture + Google Drive connector~~ ✅
-3. ~~Multi-source index (source, md5, webViewLink)~~ ✅
-4. ~~CLI --source flag + drive-login/logout/accounts~~ ✅
-5. ~~Progress bars for all pipeline steps~~ ✅
-6. ~~Incremental categorisation + MD5 computation~~ ✅
-7. ~~Organised view CLI (report --organised)~~ ✅
-8. Test with real student Drive accounts
-9. FastAPI layer
-10. Streamlit UI (two-panel organised view)
-11. SQLite migration
+3. ~~Multi-source index (per-source JSON files)~~ ✅
+4. ~~Incremental categorisation + MD5 computation~~ ✅
+5. ~~FastAPI REST layer~~ ✅
+6. ~~Electron + React desktop app~~ ✅
+7. ~~Gemma 4 Vision for image classification~~ ✅
+8. ~~Drive image Vision classification~~ ✅
+9. ~~146 pytest tests~~ ✅
+10. ~~Gradio demo on Hugging Face Spaces~~ ✅
+11. Image resizing before Vision API call (cap at 1024px)
+12. PII scrubbing before Google AI API text fallback
 
 **Phase 2 — Tier 2 (AI Study Assistant)**
-12. Near-duplicate detection (Levels 2-3)
-13. Image classification via LLaVA (Ollama)
-14. Video frame extraction + classification (ffmpeg)
-15. Semantic search via embeddings
-16. File summarisation via Claude API
-17. Subject tutor / quiz mode
-18. Gmail integration — school communication + teacher feedback
-19. Google Calendar — deadlines connected to files and subjects
-20. Vector database (ChromaDB or pgvector)
-21. Memory graph (files + emails + deadlines)
-22. Multi-step agent workflows (Claude Agent SDK)
-23. Timeline builder
-24. Chat interface (Ronit owns this)
-25. Subscription billing
+13. LanceDB local vector index — embed files as they are indexed
+14. Semantic search via LanceDB
+15. Study guide generation (RAG + Gemma 3)
+16. Near-duplicate detection (text extraction + difflib/simhash)
+17. Video frame extraction + classification (ffmpeg + Gemma 4 Vision)
+18. Google Classroom API integration
+19. Google Calendar API integration
+20. Gmail digest (school-only, local Gemma extraction)
+
+**Phase 3 — Tier 3 (Web App)**
+21. EC2 + Ollama deployment for Gemma 3 text classification
+22. Per-student auth + index storage
+23. Chromebook web UI
+
+---
+
+## 15. Testing
+
+```bash
+pytest                           # run all 146 tests
+pytest -k "not ollama"           # skip Ollama tests (if Ollama not running)
+```
+
+Ollama tests are automatically skipped if Ollama is not running. Google AI API tests use mocked responses — no API key required to run tests.
+
+Test coverage:
+- Group A/B/C classification (text + visual)
+- Index manager (merge, update, cross-source isolation)
+- Drive connector (scan, get_file_text, get_file_bytes)
+- FastAPI routes (scan, report, search, drive, files, blacklist, staging)
+- Duplicate detection
+- Staging manager
+
+---
+
+## 16. Privacy Design
+
+| Data | Where it stays |
+|------|---------------|
+| Local file content (Group B) | Process memory only — never written, logged, or sent |
+| Local file content (Group C, Ollama running) | On-device — Gemma 3 runs locally, never leaves machine |
+| Local file content (Group C, Ollama unavailable) | Sent to Google AI API (up to 2000 chars) — no PII scrubbing yet |
+| Drive file content (Group B) | Process memory only — downloaded transiently for classification |
+| Drive file content (Group C) | Same as local Group C rules above |
+| Drive images (Group C_visual) | Full image bytes sent to Google AI API |
+| Index files | Stay in `~/.declutter/` — contain filenames, sizes, MD5s, categories. No file content. |
+| OAuth tokens | Stay in `~/.declutter/drive_accounts/` — never committed to git |
