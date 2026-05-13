@@ -1,0 +1,6 @@
+gradio>=4.0
+google-genai
+python-docx
+python-pptx
+pypdf
+pandas
