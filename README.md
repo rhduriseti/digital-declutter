@@ -72,7 +72,6 @@ ollama pull gemma3:4b
 # Set your Google AI API key
 export GOOGLE_API_KEY=your_key_here
 ```
-
 ---
 
 ## Setup
@@ -84,7 +83,6 @@ python -m venv venv
 source venv/bin/activate
 pip install -e .
 ```
-
 ---
 
 ## Running the desktop app
