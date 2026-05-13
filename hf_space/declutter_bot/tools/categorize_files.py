@@ -92,15 +92,22 @@ def categorize_files(index: dict, on_progress=None, max_workers: int = 4) -> dic
         merged_scores: dict[str, int] = {}
 
         # --- Step 0: Media files ---
-        # Images: try Gemma 4 Vision first; fall back to "media" if unavailable or personal.
+        # Images: try Gemma 4 Vision first; fall back to "media" if unavailable.
         # Audio/video: extension is definitive.
         if is_media:
             with _lock:
                 gemma_ok = _state["gemma_available"]
-            if is_local and ext in VISUAL_EXTENSIONS and gemma_ok:
-                _, _, a_scores = classify_group_a(path)
+            if ext in VISUAL_EXTENSIONS and gemma_ok and (is_local or is_drive):
+                display_name = entry.get("name") if is_drive else None
+                _, _, a_scores = classify_group_a(path, display_name)
+                img_bytes = None
+                img_mime = None
+                if is_drive:
+                    img_bytes, img_mime = _get_drive_image_bytes(path, entry, source, _drive_connectors, _lock)
                 try:
-                    c_subject, c_confidence, c_also = classify_group_c_visual(path, a_scores)
+                    c_subject, c_confidence, c_also = classify_group_c_visual(
+                        path, a_scores, image_bytes=img_bytes, image_mime_type=img_mime
+                    )
                     if c_subject and c_subject != "other":
                         subject, confidence, group = c_subject, c_confidence, "C_visual"
                     else:
@@ -230,3 +237,21 @@ def _get_drive_text(
         return connector.get_file_text(file_id, mime_type, max_chars=2000, ext=ext)
     except Exception:
         return ""
+
+
+def _get_drive_image_bytes(
+    path: str, entry: dict, source: str, connectors: dict, lock: threading.Lock
+) -> tuple[bytes | None, str | None]:
+    """Download Drive image bytes into memory. Returns (bytes, mime_type) or (None, None)."""
+    try:
+        account_name = source.split(":", 1)[1]
+        file_id = path.rsplit("/", 1)[-1]
+        mime_type = entry.get("mime_type") or "image/jpeg"
+        with lock:
+            if account_name not in connectors:
+                from declutter_bot.connectors.gdrive import GoogleDriveConnector
+                connectors[account_name] = GoogleDriveConnector(account_name)
+            connector = connectors[account_name]
+        return connector.get_file_bytes(file_id), mime_type
+    except Exception:
+        return None, None
