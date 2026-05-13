@@ -7,10 +7,13 @@ dependencies = [
     "rich",
     "fastapi",
     "uvicorn[standard]",
-    "sentence-transformers",
     "python-docx",
     "python-pptx",
+    "pypdf",
 ]
+
+[project.optional-dependencies]
+kaggle = ["google-genai"]
 
 [project.scripts]
 declutter = "declutter_bot.cli.main:main"
