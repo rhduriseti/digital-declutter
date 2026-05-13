@@ -273,6 +273,23 @@ class GoogleDriveConnector(SourceConnector):
         except Exception:
             return ""
 
+    def get_file_bytes(self, file_id: str) -> bytes | None:
+        """Download raw bytes of a Drive file into memory (for Vision classification)."""
+        try:
+            from googleapiclient.http import MediaIoBaseDownload
+            import io
+            service = self._get_service()
+            request = service.files().get_media(fileId=file_id)
+            buf = io.BytesIO()
+            downloader = MediaIoBaseDownload(buf, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            buf.seek(0)
+            return buf.read()
+        except Exception:
+            return None
+
     # ------------------------------------------------------------------
     # appDataFolder — hidden per-app storage in the user's Drive
     # Index and token backups live here so data survives local disk wipes.

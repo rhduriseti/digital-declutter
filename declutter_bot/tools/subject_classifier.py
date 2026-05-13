@@ -220,9 +220,10 @@ def _call_gemma(prompt: str) -> str | None:
             try:
                 return client.models.generate_content(model=GEMMA_GOOGLE_MODEL, contents=prompt).text
             except Exception as e:
-                is_rate_limit = any(t in str(e).lower() for t in ("429", "quota", "rate", "resource exhausted"))
+                err = str(e).lower()
+                is_retryable = any(t in err for t in ("429", "quota", "rate", "resource exhausted", "500", "internal"))
                 remaining = deadline - time.monotonic()
-                if not is_rate_limit or remaining <= 0:
+                if not is_retryable or remaining <= 0:
                     raise
                 time.sleep(min(backoff, remaining))
                 backoff = min(backoff * 2, 60)
@@ -254,14 +255,15 @@ def _call_gemma_vision(
                 try:
                     return client.models.generate_content(model=GEMMA_GOOGLE_MODEL, contents=contents).text
                 except Exception as e:
-                    is_rate_limit = any(t in str(e).lower() for t in ("429", "quota", "rate", "resource exhausted"))
+                    err = str(e).lower()
+                    is_retryable = any(t in err for t in ("429", "quota", "rate", "resource exhausted", "500", "internal"))
                     remaining = deadline - time.monotonic()
-                    if not is_rate_limit or remaining <= 0:
+                    if not is_retryable or remaining <= 0:
                         raise
                     time.sleep(min(backoff, remaining))
                     backoff = min(backoff * 2, 60)
-        except Exception:
-            pass  # fall through to local Ollama vision model
+        except Exception as e:
+            print(f"[Vision API error] {type(e).__name__}: {e}")
 
     try:
         import ollama
@@ -422,6 +424,8 @@ After your reasoning, output ONLY this JSON on the final line (no markdown, no e
 def classify_group_c_visual(
     file_path: str,
     keyword_scores: dict[str, int],
+    image_bytes: bytes | None = None,
+    image_mime_type: str | None = None,
 ) -> tuple[str | None, float, str | None]:
     """
     Ask Gemma 4 Vision to classify an image (photo, screenshot, scanned notes).
@@ -479,15 +483,19 @@ STEP-BY-STEP REASONING
 After your reasoning, output ONLY this JSON on the final line (no markdown, no extra text):
 {{"subject": "<exact name from candidates>", "confidence": <0.0-1.0>, "task_type": "<image type>", "also_could_be": "<runner-up subject or null>"}}"""
 
-    try:
-        import mimetypes
-        mime_type, _ = mimetypes.guess_type(file_path)
-        if not mime_type or not mime_type.startswith("image/"):
-            mime_type = "image/jpeg"
-        with open(file_path, "rb") as f:
-            image_data = f.read()
-    except (OSError, IOError):
-        return None, 0.0, None
+    if image_bytes is not None:
+        image_data = image_bytes
+        mime_type = image_mime_type or "image/jpeg"
+    else:
+        try:
+            import mimetypes
+            mime_type, _ = mimetypes.guess_type(file_path)
+            if not mime_type or not mime_type.startswith("image/"):
+                mime_type = "image/jpeg"
+            with open(file_path, "rb") as f:
+                image_data = f.read()
+        except (OSError, IOError):
+            return None, 0.0, None
 
     raw = _call_gemma_vision(prompt, image_bytes=image_data, image_mime_type=mime_type)
     if not raw:

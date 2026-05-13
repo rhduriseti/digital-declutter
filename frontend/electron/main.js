@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 
@@ -42,6 +42,10 @@ function createWindow() {
       properties: ['openDirectory'],
     })
     return result.canceled ? null : result.filePaths[0]
+  })
+
+  ipcMain.handle('shell:openFile', async (_event, filePath) => {
+    await shell.openPath(filePath)
   })
 }
 

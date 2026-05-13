@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 const API = 'http://localhost:8000'
-const DEFAULT_FOLDERS = ['~/Documents', '~/Desktop', '~/Downloads']
+const DEFAULT_FOLDERS = []
 
 function formatBytes(bytes) {
   if (!bytes) return '0 MB'
@@ -381,11 +381,15 @@ function SettingsModal({ accounts, fetchAccounts, onClose }) {
     try {
       const res = await fetch(`${API}/drive/login/start/${accountName}`)
       const data = await res.json()
-      window.open(data.auth_url, '_blank')
+      const popup = window.open(data.auth_url, '_blank')
       pollRef.current = setInterval(async () => {
         await fetchAccounts()
-        clearInterval(pollRef.current)
-        setConnecting(null)
+        const closed = !popup || popup.closed
+        if (closed) {
+          clearInterval(pollRef.current)
+          await fetchAccounts()
+          setConnecting(null)
+        }
       }, 2000)
     } catch {
       setConnecting(null)

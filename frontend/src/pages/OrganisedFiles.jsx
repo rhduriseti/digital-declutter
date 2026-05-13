@@ -4,8 +4,9 @@ import { API, apiFetch } from '../config.js'
 
 const isElectron = !!window.electron?.isElectron
 
-function formatBytes(bytes) {
-  if (!bytes) return '0 MB'
+function formatBytes(bytes, isDrive) {
+  if (isDrive) return 'Drive file'
+  if (!bytes) return '—'
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`
   if (bytes >= 1e6) return `${(bytes / 1e6).toFixed(0)} MB`
   if (bytes >= 1e3) return `${(bytes / 1e3).toFixed(0)} KB`
@@ -272,6 +273,7 @@ function friendlyPath(file) {
 function FileRow({ file, onDragStart }) {
   const openFile = () => {
     if (file.web_view_link) window.open(file.web_view_link, '_blank')
+    else if (file.path && window.electron?.openFile) window.electron.openFile(file.path)
   }
 
   return (
@@ -292,7 +294,7 @@ function FileRow({ file, onDragStart }) {
         {file.duplicate_of && (
           <span className="text-xs bg-amber-50 text-amber-500 border border-amber-200 rounded-full px-2 py-0.5">duplicate</span>
         )}
-        <span className="text-sm text-gray-400 whitespace-nowrap">{formatBytes(file.size_bytes)}</span>
+        <span className="text-sm text-gray-400 whitespace-nowrap">{formatBytes(file.size_bytes, file.source?.startsWith('gdrive:'))}</span>
         <svg className="w-4 h-4 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
         </svg>

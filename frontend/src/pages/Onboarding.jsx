@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 const isElectron = !!window.electron?.isElectron
 
 const API = 'http://localhost:8000'
-const DEFAULT_FOLDERS = ['~/Documents', '~/Desktop', '~/Downloads']
+const DEFAULT_FOLDERS = []
 
 export default function Onboarding() {
   const navigate = useNavigate()

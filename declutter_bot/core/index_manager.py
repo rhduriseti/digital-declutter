@@ -148,5 +148,7 @@ def update_index_with_scan(new_scan: List[FileMetadata], source_id: str = "local
     Load index for this source, merge new scan results, save back.
     """
     existing = load_index(source_id)
+    # Drop any entries that belong to a different source (prevents cross-source leakage)
+    existing = {k: v for k, v in existing.items() if v.get("source", "local") == source_id}
     merged = merge_scans(existing, new_scan)
     save_index(merged, source_id)
