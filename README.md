@@ -1,16 +1,33 @@
-# Digital Declutter
+# Claire — AI School File Organiser
 
-A tool that helps students organise, categorise, and clean up files across local storage and Google Drive.
+Claire is a desktop app that helps students automatically organise their school files across local storage and Google Drive using Gemma 3 (local) and Gemma 4 Vision (cloud).
+
+**[Live Demo on Hugging Face Spaces](https://huggingface.co/spaces/rhduriseti/claire-school-organiser)**
 
 ---
 
-## What it does
+## How it works
 
-- Scans local folders and Google Drive accounts
-- Categorises files by subject (Biology, Math, English, etc.)
+Claire uses a 3-group classification pipeline:
+
+- **Group A** — Filename and folder keywords (instant, no model needed)
+- **Group B** — File content keyword scoring (fast, no model needed)
+- **Group C** — Gemma AI arbitration for ambiguous files:
+  - **Text files** → Gemma 3 (`gemma3:4b`) via Ollama, running fully locally and privately
+  - **Image files** → Gemma 4 Vision (`gemma-4-26b-a4b-it`) via Google AI API, for handwritten notes and photos
+
+Files are classified into school subjects (Math, Biology, English, History, Spanish, Art, Band, PE, Science) or personal categories.
+
+---
+
+## Features
+
+- Scans local folders and Google Drive (school + personal accounts)
+- Classifies files by subject using Gemma 3 + Gemma 4 Vision
 - Detects duplicate files across all sources
-- Lets you remove duplicates, untrack folders, and manage a blacklist
-- Exposes everything as a CLI and a REST API (for the web UI)
+- Drag-and-drop to reassign categories
+- Click to open files (local) or view in Drive
+- Desktop app (Electron) + REST API + Gradio demo
 
 ---
 
@@ -18,122 +35,84 @@ A tool that helps students organise, categorise, and clean up files across local
 
 ```
 declutter_bot/
-  cli/          # CLI entry point (declutter command)
-  api/          # FastAPI server (declutter-api command)
-    routes/     # One file per feature: scan, report, search, drive, untrack, blacklist, staging
-  core/         # Shared logic: index manager, file metadata, paths, blacklist, staging
+  api/          # FastAPI server
+    routes/     # scan, report, search, drive, files, blacklist, staging
+  core/         # Index manager, file metadata, paths
   connectors/   # Local and Google Drive connectors
-  tools/        # Business logic: scan, categorise, detect duplicates, delete, search, report
-  tests/        # Pytest test suite
+  tools/        # Classification pipeline, duplicate detection, report generation
+  tests/        # 146 pytest tests
 
-~/.declutter/                  # All user data lives here (outside the repo)
-  local_index.json             # Index of local files
-  gdrive_<name>_index.json     # Index per connected Drive account
-  drive_accounts/              # OAuth tokens per account
-  credentials.json             # Google OAuth credentials for CLI (Desktop app type)
-  credentials_web.json         # Google OAuth credentials for API (Web app type)
-  blacklist.json
-  staging_log.json
+frontend/
+  src/          # React + Tailwind UI
+  electron/     # Electron main + preload (desktop app)
+
+hf_space/       # Self-contained Gradio demo for Hugging Face Spaces
+
+~/.declutter/                  # All user data (outside the repo)
+  local_index.json
+  gdrive_<name>_index.json
+  drive_accounts/              # OAuth tokens
+  credentials.json             # Google OAuth (Desktop app type)
+  credentials_web.json         # Google OAuth (Web app type)
+```
+
+---
+
+## Prerequisites
+
+- Python 3.9+
+- Node.js 18+
+- [Ollama](https://ollama.com) with `gemma3:4b` pulled (for local text classification)
+- `GOOGLE_API_KEY` set in your environment (for Gemma 4 Vision image classification)
+
+```bash
+# Pull the local model
+ollama pull gemma3:4b
+
+# Set your Google AI API key
+export GOOGLE_API_KEY=your_key_here
 ```
 
 ---
 
 ## Setup
 
-**Requires Python 3.9+**
-
 ```bash
-# Clone and set up a virtual environment
-git clone <repo-url>
-cd digital_declutter
+git clone https://github.com/rhduriseti/digital-declutter
+cd digital-declutter
 python -m venv venv
-source venv/bin/activate       # Windows: venv\Scripts\activate
-
-# Install in editable mode
+source venv/bin/activate
 pip install -e .
 ```
 
 ---
 
-## Running the CLI
+## Running the desktop app
+
+Start the API in one terminal:
 
 ```bash
-# Scan a local folder
-declutter scan ~/Documents
-
-# Scan a connected Google Drive account
-declutter scan --source gdrive:school
-
-# View report across all sources
-declutter report --pretty
-
-# Search the index
-declutter search "bio notes"
-
-# Connect a Google Drive account (opens browser)
-declutter drive-login school
-
-# Disconnect (token deleted, index preserved)
-declutter drive-logout school
-
-# List connected accounts
-declutter drive-accounts
-
-# Remove a folder from the index (without blacklisting)
-declutter untrack ~/Documents/some-folder
-
-# Blacklist a folder permanently
-declutter blacklist add ~/Downloads/some-folder
-
-# Delete duplicate files
-declutter delete-duplicates --dry-run
-declutter delete-duplicates
-
-# Manage staged (soft-deleted) files
-declutter staging show
-declutter staging restore --all
-declutter staging empty
+source venv/bin/activate
+uvicorn declutter_bot.api.app:app --reload
 ```
 
----
-
-## Running the API server
-
-```bash
-declutter-api
-# API runs at http://127.0.0.1:8000
-# Swagger docs at http://127.0.0.1:8000/docs
-```
-
-The API exposes the same features as the CLI. Ronit's web UI talks to this server.
-
----
-
-## Running the frontend (web browser)
+Start the Electron app in a second terminal:
 
 ```bash
 cd frontend
 npm install        # first time only
-npm run dev
-# Opens at http://localhost:5173
-```
-
-Requires the API server to be running at the same time.
-
----
-
-## Running the desktop app (Electron)
-
-Start the API server in one terminal, then in a second terminal:
-
-```bash
-cd frontend
 npm run electron:dev
 ```
 
-This launches the Electron window with the React UI. The API server must be running separately — the desktop app does not start it automatically in dev mode.
+---
 
-For Google Drive OAuth via the API, you need a **Web application** OAuth client saved as `~/.declutter/credentials_web.json`. The CLI uses a **Desktop app** client saved as `~/.declutter/credentials.json`. These are different credentials — see Google Cloud Console to create them.
+## Running the Gradio demo locally
+
+```bash
+cd hf_space
+pip install -r requirements.txt
+python app.py
+```
 
 ---
 
@@ -143,16 +122,16 @@ For Google Drive OAuth via the API, you need a **Web application** OAuth client 
 pytest
 ```
 
-Ollama tests are skipped automatically if the Ollama server is not running. All other tests run without any external dependencies.
+All 146 tests pass. Ollama tests are skipped automatically if Ollama is not running.
 
 ---
 
 ## Key design decisions
 
-- **One index file per source** — `local_index.json`, `gdrive_school_index.json`, etc. Report and search merge them automatically.
-- **Logout preserves the index** — only the OAuth token is deleted. Reconnecting restores the account without rescanning.
-- **Blacklist vs untrack** — blacklist permanently blocks a folder from future scans; untrack just removes its current entries (folder can be scanned again later).
-- **Drive files are never deleted by the app** — only local files can be moved to staging or permanently deleted. Drive duplicates show a link to delete manually.
-- **Privacy first** — local file content never leaves the device. For Google Drive files, content is downloaded transiently into memory for classification and discarded immediately — never stored on disk or sent to any third party.
+- **Privacy first** — local files never leave the device. Gemma 3 runs fully on-device via Ollama.
+- **Gemma 4 Vision for images** — handwritten notes and photos are classified by what Gemma sees, not just the filename.
+- **One index per source** — `local_index.json`, `gdrive_school_index.json`, etc. merged at report time.
+- **Logout preserves the index** — reconnecting restores the account without rescanning.
+- **Student corrections are permanent** — drag-and-drop recategorisation is never overwritten by future scans.
 
 For full architecture details see [ARCHITECTURE.md](ARCHITECTURE.md).
