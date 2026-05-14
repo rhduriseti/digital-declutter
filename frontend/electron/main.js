@@ -104,9 +104,60 @@ function makeProgressWindow(title, heading, subtext) {
 }
 
 function setProgressStatus(win, status) {
+  if (!win || win.isDestroyed()) return
   win.webContents.executeJavaScript(
     `document.getElementById('status').textContent = ${JSON.stringify(status)}`
   ).catch(() => {})
+}
+
+async function handleCurlResult(code, progressWin, tmpZip, extractDir, appsDir, resolve) {
+  if (code !== 0) {
+    if (!progressWin.isDestroyed()) progressWin.close()
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Claire — Ollama Download Failed',
+      message: 'Could not download Ollama',
+      detail:
+        'Download failed. Please check your internet connection.\n\n' +
+        'Click "Visit ollama.com" to install Ollama manually, or continue with cloud AI.',
+      buttons: ['Visit ollama.com', 'Use Cloud AI'],
+      defaultId: 0,
+    })
+    if (response === 0) shell.openExternal('https://ollama.com/download')
+    resolve(false)
+    return
+  }
+
+  setProgressStatus(progressWin, 'Installing Ollama...')
+
+  try {
+    fs.mkdirSync(extractDir, { recursive: true })
+    execSync(`unzip -o "${tmpZip}" -d "${extractDir}"`)
+    fs.mkdirSync(appsDir, { recursive: true })
+    execSync(`cp -R "${extractDir}/Ollama.app" "${appsDir}/"`)
+    spawn('open', [`${appsDir}/Ollama.app`], { detached: true, stdio: 'ignore' })
+  } catch (e) {
+    if (!progressWin.isDestroyed()) progressWin.close()
+    const { response } = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Claire — Ollama Install Failed',
+      message: 'Automatic installation failed',
+      detail:
+        'Could not install Ollama automatically.\n\n' +
+        'Click "Visit ollama.com" to install Ollama manually, or continue with cloud AI.',
+      buttons: ['Visit ollama.com', 'Use Cloud AI'],
+      defaultId: 0,
+    })
+    if (response === 0) shell.openExternal('https://ollama.com/download')
+    resolve(false)
+    return
+  }
+
+  setProgressStatus(progressWin, 'Waiting for Ollama to finish setup...')
+  waitForOllamaCLI(() => {
+    if (!progressWin.isDestroyed()) progressWin.close()
+    resolve(true)
+  })
 }
 
 // Download and auto-install Ollama.app into ~/Applications, then launch it
@@ -134,57 +185,9 @@ function installOllama() {
       if (match) setProgressStatus(progressWin, `Downloading Ollama... ${match[1]}%`)
     })
 
-    curl.on('close', async (code) => {
-      if (code !== 0) {
-        progressWin.close()
-        const { response } = await dialog.showMessageBox({
-          type: 'warning',
-          title: 'Claire — Ollama Download Failed',
-          message: 'Could not download Ollama',
-          detail:
-            'Download failed. Please check your internet connection.\n\n' +
-            'Click "Visit ollama.com" to install Ollama manually, or continue with cloud AI.',
-          buttons: ['Visit ollama.com', 'Use Cloud AI'],
-          defaultId: 0,
-        })
-        if (response === 0) shell.openExternal('https://ollama.com/download')
-        resolve(false)
-        return
-      }
-
-      setProgressStatus(progressWin, 'Installing Ollama...')
-
-      try {
-        fs.mkdirSync(extractDir, { recursive: true })
-        execSync(`unzip -o "${tmpZip}" -d "${extractDir}"`)
-        fs.mkdirSync(appsDir, { recursive: true })
-        execSync(`cp -R "${extractDir}/Ollama.app" "${appsDir}/"`)
-        // Launch Ollama.app — this installs the ollama CLI to /usr/local/bin/ollama
-        spawn('open', [`${appsDir}/Ollama.app`], { detached: true, stdio: 'ignore' })
-      } catch (e) {
-        progressWin.close()
-        const { response } = await dialog.showMessageBox({
-          type: 'warning',
-          title: 'Claire — Ollama Install Failed',
-          message: 'Automatic installation failed',
-          detail:
-            `Could not install Ollama automatically.\n\n` +
-            `Click "Visit ollama.com" to install Ollama manually, or continue with cloud AI.`,
-          buttons: ['Visit ollama.com', 'Use Cloud AI'],
-          defaultId: 0,
-        })
-        if (response === 0) shell.openExternal('https://ollama.com/download')
-        resolve(false)
-        return
-      }
-
-      setProgressStatus(progressWin, 'Waiting for Ollama to finish setup...')
-
-      // Poll for ollama CLI to become available (Ollama.app installs it on first launch)
-      waitForOllamaCLI(() => {
-        progressWin.close()
-        resolve(true)
-      })
+    curl.on('close', (code) => {
+      // Handle async work outside the event listener to avoid unhandled rejections
+      handleCurlResult(code, progressWin, tmpZip, extractDir, appsDir, resolve)
     })
   })
 }
