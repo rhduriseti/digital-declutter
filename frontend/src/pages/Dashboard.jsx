@@ -383,9 +383,14 @@ function SettingsModal({ accounts, fetchAccounts, onClose }) {
       const data = await res.json()
       const popup = window.open(data.auth_url, '_blank')
       pollRef.current = setInterval(async () => {
-        await fetchAccounts()
+        // Fetch fresh accounts from backend
+        const r = await fetch(`${API}/drive/accounts`).then(x => x.json()).catch(() => ({ accounts: [] }))
+        const currentAccounts = r.accounts || []
+        fetchAccounts()
+        // Stop if popup closed OR account successfully connected
         const closed = !popup || popup.closed
-        if (closed) {
+        const connected = currentAccounts.includes(accountName)
+        if (closed || connected) {
           clearInterval(pollRef.current)
           await fetchAccounts()
           setConnecting(null)

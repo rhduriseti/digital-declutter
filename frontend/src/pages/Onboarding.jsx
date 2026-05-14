@@ -73,9 +73,12 @@ export default function Onboarding() {
       const data = await res.json()
       const popup = window.open(data.auth_url, '_blank')
       pollRef.current = setInterval(async () => {
-        await fetchAccounts()
+        const r = await fetch(`${API}/drive/accounts`).then(x => x.json()).catch(() => ({ accounts: [] }))
+        const currentAccounts = r.accounts || []
+        fetchAccounts()
         const closed = !popup || popup.closed
-        if (closed) {
+        const connected = currentAccounts.includes(accountName)
+        if (closed || connected) {
           clearInterval(pollRef.current)
           await fetchAccounts()
           setConnecting(null)
