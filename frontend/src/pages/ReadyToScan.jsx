@@ -16,10 +16,10 @@ export default function ReadyToScan() {
   async function handleStartScan() {
     // RAM check — warn if free RAM is under 4GB (Gemma 3 needs ~3GB)
     if (window.electron?.checkRAM) {
-      const { freeGB, totalGB } = await window.electron.checkRAM()
-      if (freeGB < 4) {
+      const { freeGB, totalGB, freePct } = await window.electron.checkRAM()
+      if (freePct < 20) {
         const proceed = window.confirm(
-          `Low available memory: ${freeGB} GB free out of ${totalGB} GB total.\n\n` +
+          `Low available memory: ${freeGB} GB free out of ${totalGB} GB total (${freePct}%).\n\n` +
           `Gemma 3 needs ~3 GB to run. To free up memory before scanning, try:\n` +
           `  • Close extra Chrome or Safari tabs\n` +
           `  • Quit Zoom or any video calls\n` +

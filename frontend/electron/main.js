@@ -341,8 +341,16 @@ function createWindow() {
 
   ipcMain.handle('system:checkRAM', () => {
     const totalGB = os.totalmem() / (1024 * 1024 * 1024)
-    const freeGB = os.freemem() / (1024 * 1024 * 1024)
-    return { totalGB: Math.round(totalGB), freeGB: parseFloat(freeGB.toFixed(1)) }
+    // Use memory_pressure percentage instead of os.freemem() — macOS reclaims
+    // inactive/compressed memory instantly so raw free pages are misleading.
+    let freePct = 100
+    try {
+      const out = execSync('memory_pressure', { encoding: 'utf8' })
+      const match = out.match(/System-wide memory free percentage:\s*(\d+)%/)
+      if (match) freePct = parseInt(match[1], 10)
+    } catch (_) {}
+    const freeGB = parseFloat(((freePct / 100) * totalGB).toFixed(1))
+    return { totalGB: Math.round(totalGB), freeGB, freePct }
   })
 }
 
