@@ -339,6 +339,25 @@ function createWindow() {
     await shell.openPath(filePath)
   })
 
+  const settingsPath = path.join(os.homedir(), '.declutter', 'settings.json')
+
+  ipcMain.handle('settings:get', () => {
+    try {
+      const data = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
+      return data
+    } catch (_) {
+      return {}
+    }
+  })
+
+  ipcMain.handle('settings:set', (_event, data) => {
+    try {
+      fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+      const existing = (() => { try { return JSON.parse(fs.readFileSync(settingsPath, 'utf8')) } catch { return {} } })()
+      fs.writeFileSync(settingsPath, JSON.stringify({ ...existing, ...data }, null, 2))
+    } catch (_) {}
+  })
+
   ipcMain.handle('system:checkRAM', () => {
     const totalGB = os.totalmem() / (1024 * 1024 * 1024)
     // Use memory_pressure percentage instead of os.freemem() — macOS reclaims

@@ -6,34 +6,38 @@ const isElectron = !!window.electron?.isElectron
 const API = 'http://localhost:8000'
 const DEFAULT_FOLDERS = []
 
+async function loadFolders() {
+  if (window.electron?.getSettings) {
+    const settings = await window.electron.getSettings()
+    return Array.isArray(settings.folders) ? settings.folders : DEFAULT_FOLDERS
+  }
+  try {
+    const saved = localStorage.getItem('claire_folders')
+    const parsed = saved ? JSON.parse(saved) : DEFAULT_FOLDERS
+    return Array.isArray(parsed) ? parsed : DEFAULT_FOLDERS
+  } catch {
+    return DEFAULT_FOLDERS
+  }
+}
+
+async function persistFolders(folders) {
+  if (window.electron?.saveSettings) {
+    await window.electron.saveSettings({ folders })
+  }
+  localStorage.setItem('claire_folders', JSON.stringify(folders))
+}
+
 export default function Onboarding() {
   const navigate = useNavigate()
-  const [folders, setFolders] = useState(() => {
-    try {
-      const saved = localStorage.getItem('claire_folders')
-      const parsed = saved ? JSON.parse(saved) : DEFAULT_FOLDERS
-      return Array.isArray(parsed) && parsed.length > 0 ? parsed : DEFAULT_FOLDERS
-    } catch {
-      return DEFAULT_FOLDERS
-    }
-  })
+  const [folders, setFolders] = useState(DEFAULT_FOLDERS)
   const [newFolder, setNewFolder] = useState('')
   const [connectedAccounts, setConnectedAccounts] = useState([])
   const [connecting, setConnecting] = useState(null)
   const pollRef = useRef(null)
 
   useEffect(() => {
+    loadFolders().then(setFolders)
     fetchAccounts()
-    // Always persist valid defaults on first load
-    const saved = localStorage.getItem('claire_folders')
-    try {
-      const parsed = saved ? JSON.parse(saved) : []
-      if (!Array.isArray(parsed) || parsed.length === 0) {
-        localStorage.setItem('claire_folders', JSON.stringify(DEFAULT_FOLDERS))
-      }
-    } catch {
-      localStorage.setItem('claire_folders', JSON.stringify(DEFAULT_FOLDERS))
-    }
     return () => clearInterval(pollRef.current)
   }, [])
 
@@ -45,9 +49,9 @@ export default function Onboarding() {
     } catch {}
   }
 
-  function updateFolders(updated) {
+  async function updateFolders(updated) {
     setFolders(updated)
-    localStorage.setItem('claire_folders', JSON.stringify(updated))
+    await persistFolders(updated)
   }
 
   function handleAddFolder() {

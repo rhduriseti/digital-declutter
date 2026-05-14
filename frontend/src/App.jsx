@@ -28,8 +28,17 @@ function AppRouter() {
         )
 
         const hasDrives = accounts.length > 0
-        const savedFolders = localStorage.getItem('claire_folders')
-        const folders = (() => { try { return JSON.parse(savedFolders) } catch { return [] } })()
+
+        let folders = []
+        if (window.electron?.getSettings) {
+          const settings = await window.electron.getSettings()
+          folders = Array.isArray(settings.folders) ? settings.folders : []
+        } else {
+          try {
+            const saved = localStorage.getItem('claire_folders')
+            folders = saved ? JSON.parse(saved) : []
+          } catch { folders = [] }
+        }
         const hasFolders = Array.isArray(folders) && folders.length > 0
 
         setIsFirstTime(!hasFolders && !hasDrives)
