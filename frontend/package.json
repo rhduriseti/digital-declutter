@@ -37,8 +37,22 @@
       "dist/**/*",
       "electron/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "../installer/dist/declutter-api-bin",
+        "to": "declutter-api-bin"
+      }
+    ],
     "mac": {
-      "category": "public.app-category.productivity"
+      "category": "public.app-category.productivity",
+      "identity": null
+    },
+    "dmg": {
+      "title": "Claire Installer",
+      "window": {
+        "width": 540,
+        "height": 380
+      }
     }
   }
 }

@@ -12,5 +12,7 @@ credentials.json
 credentials_web.json
 frontend/node_modules/
 frontend/dist/
+installer/dist/
+frontend/dist-electron/
 .vscode/
 .claude/settings.local.json
