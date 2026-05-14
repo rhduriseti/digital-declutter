@@ -72,8 +72,7 @@ function retryOrFail(onReady, attempt, maxAttempts) {
   setTimeout(() => waitForBackend(onReady, attempt + 1, maxAttempts), 500)
 }
 
-// Check available disk space on the home volume.
-// Returns free bytes.
+// Check available disk space on the home volume. Returns free bytes.
 function getFreeDiskBytes() {
   try {
     const out = execSync('df -k ~', { encoding: 'utf8' })
@@ -82,6 +81,124 @@ function getFreeDiskBytes() {
     return freeKB * 1024
   } catch (_) {
     return Infinity
+  }
+}
+
+// Show a simple progress window with a status line that can be updated.
+function makeProgressWindow(title, heading, subtext) {
+  const win = new BrowserWindow({
+    width: 440,
+    height: 180,
+    resizable: false,
+    minimizable: false,
+    title,
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
+  })
+  win.loadURL(
+    `data:text/html,<body style="font-family:-apple-system,sans-serif;padding:28px;background:#f5f5f5">` +
+    `<h3 id="heading" style="margin:0 0 10px;font-size:15px">${heading}</h3>` +
+    `<p id="status" style="color:#666;font-size:13px;margin:0">${subtext}</p>` +
+    `</body>`
+  )
+  return win
+}
+
+function setProgressStatus(win, status) {
+  win.webContents.executeJavaScript(
+    `document.getElementById('status').textContent = ${JSON.stringify(status)}`
+  ).catch(() => {})
+}
+
+// Download and auto-install Ollama.app into ~/Applications, then launch it
+// to register the ollama CLI, then poll until the CLI is available.
+function installOllama() {
+  return new Promise((resolve) => {
+    const progressWin = makeProgressWindow(
+      'Installing Ollama...',
+      'Setting up local AI (Ollama)',
+      'Downloading Ollama — this runs once...'
+    )
+
+    const tmpZip = path.join(os.tmpdir(), 'Ollama-darwin.zip')
+    const extractDir = path.join(os.tmpdir(), 'ollama-extract')
+    const appsDir = path.join(os.homedir(), 'Applications')
+
+    // Use curl — handles redirects, available on all macOS, shows download progress via stderr
+    const curl = spawn('curl', ['-L', '-o', tmpZip, 'https://ollama.com/download/Ollama-darwin.zip'], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    })
+
+    curl.stderr.on('data', (chunk) => {
+      // curl progress lines look like: " 45  234M   45  105M    0     0  5210k      0  0:00:46  0:00:20  0:00:26 5331k"
+      const match = chunk.toString().match(/\s+(\d+)\s+/)
+      if (match) setProgressStatus(progressWin, `Downloading Ollama... ${match[1]}%`)
+    })
+
+    curl.on('close', async (code) => {
+      if (code !== 0) {
+        progressWin.close()
+        const { response } = await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Claire — Ollama Download Failed',
+          message: 'Could not download Ollama',
+          detail:
+            'Download failed. Please check your internet connection.\n\n' +
+            'Click "Visit ollama.com" to install Ollama manually, or continue with cloud AI.',
+          buttons: ['Visit ollama.com', 'Use Cloud AI'],
+          defaultId: 0,
+        })
+        if (response === 0) shell.openExternal('https://ollama.com/download')
+        resolve(false)
+        return
+      }
+
+      setProgressStatus(progressWin, 'Installing Ollama...')
+
+      try {
+        fs.mkdirSync(extractDir, { recursive: true })
+        execSync(`unzip -o "${tmpZip}" -d "${extractDir}"`)
+        fs.mkdirSync(appsDir, { recursive: true })
+        execSync(`cp -R "${extractDir}/Ollama.app" "${appsDir}/"`)
+        // Launch Ollama.app — this installs the ollama CLI to /usr/local/bin/ollama
+        spawn('open', [`${appsDir}/Ollama.app`], { detached: true, stdio: 'ignore' })
+      } catch (e) {
+        progressWin.close()
+        const { response } = await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Claire — Ollama Install Failed',
+          message: 'Automatic installation failed',
+          detail:
+            `Could not install Ollama automatically.\n\n` +
+            `Click "Visit ollama.com" to install Ollama manually, or continue with cloud AI.`,
+          buttons: ['Visit ollama.com', 'Use Cloud AI'],
+          defaultId: 0,
+        })
+        if (response === 0) shell.openExternal('https://ollama.com/download')
+        resolve(false)
+        return
+      }
+
+      setProgressStatus(progressWin, 'Waiting for Ollama to finish setup...')
+
+      // Poll for ollama CLI to become available (Ollama.app installs it on first launch)
+      waitForOllamaCLI(() => {
+        progressWin.close()
+        resolve(true)
+      })
+    })
+  })
+}
+
+function waitForOllamaCLI(onReady, attempt = 0, maxAttempts = 30) {
+  try {
+    execSync('ollama --version', { stdio: 'ignore' })
+    onReady()
+  } catch (_) {
+    if (attempt >= maxAttempts) {
+      onReady() // give up waiting, continue — CLI may just need a PATH refresh
+      return
+    }
+    setTimeout(() => waitForOllamaCLI(onReady, attempt + 1, maxAttempts), 1000)
   }
 }
 
@@ -119,17 +236,20 @@ async function checkOllama() {
     const { response } = await dialog.showMessageBox({
       type: 'info',
       title: 'Claire — Local AI Setup',
-      message: 'Install Ollama for local AI processing',
+      message: 'Setting up local AI processing',
       detail:
         'Claire uses Gemma 3 to classify your files locally — your content never leaves your device.\n\n' +
-        'Ollama is not installed. You can install it now, or continue using cloud mode (Google AI API).',
-      buttons: ['Download Ollama', 'Use Cloud Mode'],
+        'Claire will automatically download and install Ollama for you.\n\n' +
+        'If installation fails, Claire will fall back to cloud AI (Google AI API) for classification.',
+      buttons: ['Install Ollama', 'Skip'],
       defaultId: 0,
     })
     if (response === 0) {
-      shell.openExternal('https://ollama.com/download')
+      const installed = await installOllama()
+      if (!installed) return
+    } else {
+      return
     }
-    return
   }
 
   // Step 2: is gemma3:4b pulled?
@@ -147,7 +267,7 @@ async function checkOllama() {
       detail:
         'Claire needs to download the Gemma 3 model once for local AI processing.\n\n' +
         'This takes a few minutes on a typical connection. You can skip this and use cloud mode instead.',
-      buttons: ['Download Now', 'Use Cloud Mode'],
+      buttons: ['Download Now', 'Skip'],
       defaultId: 0,
     })
     if (response === 1) return
@@ -162,22 +282,19 @@ async function checkOllama() {
 
 function pullGemma() {
   return new Promise((resolve) => {
-    let progressWin = new BrowserWindow({
-      width: 420,
-      height: 160,
-      resizable: false,
-      minimizable: false,
-      title: 'Downloading Gemma 3...',
-      webPreferences: { nodeIntegration: true, contextIsolation: false },
-    })
-    progressWin.loadURL(
-      'data:text/html,<body style="font-family:sans-serif;padding:24px;background:#f5f5f5">' +
-      '<h3 style="margin:0 0 12px">Downloading Gemma 3 (2.7 GB)...</h3>' +
-      '<p style="color:#666;font-size:13px">This runs once. Claire will use local AI for all future scans.</p>' +
-      '</body>'
+    const progressWin = makeProgressWindow(
+      'Downloading Gemma 3...',
+      'Downloading Gemma 3 (2.7 GB)...',
+      'This runs once. Claire will use local AI for all future scans.'
     )
 
     const pull = spawn('ollama', ['pull', 'gemma3:4b'], { stdio: ['ignore', 'pipe', 'pipe'] })
+
+    pull.stdout.on('data', (chunk) => {
+      const line = chunk.toString().trim().split('\n').pop()
+      if (line) setProgressStatus(progressWin, line)
+    })
+
     pull.on('close', () => {
       progressWin.close()
       resolve()

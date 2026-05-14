@@ -20,8 +20,11 @@ export default function ReadyToScan() {
       if (freeGB < 4) {
         const proceed = window.confirm(
           `Low available memory: ${freeGB} GB free out of ${totalGB} GB total.\n\n` +
-          `Gemma 3 needs ~3 GB to run. With other apps open (Chrome, Zoom, etc.) your computer may slow down during the scan.\n\n` +
-          `Close some apps before scanning for the best experience. Continue anyway?`
+          `Gemma 3 needs ~3 GB to run. To free up memory before scanning, try:\n` +
+          `  • Close extra Chrome or Safari tabs\n` +
+          `  • Quit Zoom or any video calls\n` +
+          `  • Close any other open apps\n\n` +
+          `Then click Cancel and try again. Continue anyway?`
         )
         if (!proceed) return
       }
