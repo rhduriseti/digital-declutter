@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const { spawn, execSync } = require('child_process')
 const http = require('http')
 
@@ -28,11 +29,13 @@ function startBackend() {
     try { fs.chmodSync(bin, 0o755) } catch (_) {}
   }
 
-  const logStream = fs.createWriteStream(getLogPath(), { flags: 'a' })
+  const logPath = getLogPath()
+  fs.mkdirSync(path.dirname(logPath), { recursive: true })
+  const logFd = fs.openSync(logPath, 'a')
 
   backendProcess = spawn(bin, [], {
     shell: !app.isPackaged,
-    stdio: ['ignore', logStream, logStream],
+    stdio: ['ignore', logFd, logFd],
     detached: false,
   })
 
@@ -69,11 +72,41 @@ function retryOrFail(onReady, attempt, maxAttempts) {
   setTimeout(() => waitForBackend(onReady, attempt + 1, maxAttempts), 500)
 }
 
+// Check available disk space on the home volume.
+// Returns free bytes.
+function getFreeDiskBytes() {
+  try {
+    const out = execSync('df -k ~', { encoding: 'utf8' })
+    const line = out.trim().split('\n')[1]
+    const freeKB = parseInt(line.trim().split(/\s+/)[3], 10)
+    return freeKB * 1024
+  } catch (_) {
+    return Infinity
+  }
+}
+
 // Check if Ollama is installed and gemma3:4b is pulled.
 // Writes ~/.declutter/ollama_ready when both are confirmed so future launches skip this.
 async function checkOllama() {
   const flagPath = path.join(app.getPath('home'), '.declutter', 'ollama_ready')
   if (fs.existsSync(flagPath)) return
+
+  // Disk space check — need at least 3GB for Ollama + gemma3:4b
+  const MIN_DISK_BYTES = 3 * 1024 * 1024 * 1024
+  const freeDisk = getFreeDiskBytes()
+  if (freeDisk < MIN_DISK_BYTES) {
+    const freeGB = (freeDisk / (1024 * 1024 * 1024)).toFixed(1)
+    await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Claire — Low Disk Space',
+      message: 'Not enough disk space',
+      detail:
+        `Claire needs ~3 GB to download the Gemma 3 AI model.\n\n` +
+        `Your disk has ${freeGB} GB free. Please free up some space and relaunch Claire.`,
+      buttons: ['OK'],
+    })
+    return
+  }
 
   // Step 1: is Ollama installed?
   let ollamaInstalled = false
@@ -184,6 +217,12 @@ function createWindow() {
 
   ipcMain.handle('shell:openFile', async (_event, filePath) => {
     await shell.openPath(filePath)
+  })
+
+  ipcMain.handle('system:checkRAM', () => {
+    const totalGB = os.totalmem() / (1024 * 1024 * 1024)
+    const freeGB = os.freemem() / (1024 * 1024 * 1024)
+    return { totalGB: Math.round(totalGB), freeGB: parseFloat(freeGB.toFixed(1)) }
   })
 }
 

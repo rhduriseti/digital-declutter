@@ -15,6 +15,9 @@ dependencies = [
 [project.optional-dependencies]
 kaggle = ["google-genai"]
 
+[tool.setuptools.packages.find]
+include = ["declutter_bot*"]
+
 [project.scripts]
 declutter = "declutter_bot.cli.main:main"
 declutter-api = "declutter_bot.api.app:main"

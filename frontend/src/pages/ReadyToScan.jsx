@@ -14,6 +14,19 @@ export default function ReadyToScan() {
   const { folders = [], connectedAccounts = [] } = location.state || {}
 
   async function handleStartScan() {
+    // RAM check — warn if free RAM is under 4GB (Gemma 3 needs ~3GB)
+    if (window.electron?.checkRAM) {
+      const { freeGB, totalGB } = await window.electron.checkRAM()
+      if (freeGB < 4) {
+        const proceed = window.confirm(
+          `Low available memory: ${freeGB} GB free out of ${totalGB} GB total.\n\n` +
+          `Gemma 3 needs ~3 GB to run. With other apps open (Chrome, Zoom, etc.) your computer may slow down during the scan.\n\n` +
+          `Close some apps before scanning for the best experience. Continue anyway?`
+        )
+        if (!proceed) return
+      }
+    }
+
     const jobs = []
 
     for (const folder of folders) {
