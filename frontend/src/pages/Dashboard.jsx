@@ -36,19 +36,30 @@ export default function Dashboard() {
     fetchAccounts()
   }, [])
 
-  async function fetchReport() {
-    try {
-      const res = await fetch(`${API}/report`)
-      setReport(await res.json())
-    } catch {}
+  async function fetchReport(retries = 5) {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const res = await fetch(`${API}/report`)
+        setReport(await res.json())
+        return
+      } catch {
+        if (i < retries - 1) await new Promise(r => setTimeout(r, 2000))
+      }
+    }
+    setReport('error')
   }
 
-  async function fetchAccounts() {
-    try {
-      const res = await fetch(`${API}/drive/accounts`)
-      const data = await res.json()
-      setAccounts(data.accounts || [])
-    } catch {}
+  async function fetchAccounts(retries = 5) {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const res = await fetch(`${API}/drive/accounts`)
+        const data = await res.json()
+        setAccounts(data.accounts || [])
+        return
+      } catch {
+        if (i < retries - 1) await new Promise(r => setTimeout(r, 2000))
+      }
+    }
   }
 
   async function handleScanNow() {
@@ -57,9 +68,14 @@ export default function Dashboard() {
       const jobs = []
       let folders
       try {
-        const saved = localStorage.getItem('claire_folders')
-        folders = saved ? JSON.parse(saved) : DEFAULT_FOLDERS
-        if (!Array.isArray(folders)) folders = DEFAULT_FOLDERS
+        if (window.electron?.getSettings) {
+          const settings = await window.electron.getSettings()
+          folders = Array.isArray(settings.folders) ? settings.folders : DEFAULT_FOLDERS
+        } else {
+          const saved = localStorage.getItem('claire_folders')
+          folders = saved ? JSON.parse(saved) : DEFAULT_FOLDERS
+          if (!Array.isArray(folders)) folders = DEFAULT_FOLDERS
+        }
       } catch {
         folders = DEFAULT_FOLDERS
       }
@@ -140,7 +156,9 @@ export default function Dashboard() {
 
       {/* Stats bar */}
       <div className="bg-white rounded-2xl px-6 py-4 shadow-sm">
-        {report ? (
+        {report === 'error' ? (
+        <p className="text-sm text-red-400">Could not reach backend — quit and relaunch Claire.</p>
+      ) : report ? (
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-4 text-gray-700 text-base">
               <svg className="w-5 h-5 text-blue-500 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
@@ -291,27 +309,16 @@ function SettingsModal({ accounts, fetchAccounts, onClose }) {
   const [autoScan, setAutoScan] = useState(localStorage.getItem('claire_auto_scan') === 'true')
   const [blacklist, setBlacklist] = useState([])
   const [newIgnored, setNewIgnored] = useState('')
-  const [folders, setFolders] = useState(() => {
-    try {
-      const saved = localStorage.getItem('claire_folders')
-      return saved ? JSON.parse(saved) : DEFAULT_FOLDERS
-    } catch {
-      return DEFAULT_FOLDERS
-    }
-  })
-  const [initialFolders] = useState(() => {
-    try {
-      const saved = localStorage.getItem('claire_folders')
-      return saved ? JSON.parse(saved) : DEFAULT_FOLDERS
-    } catch {
-      return DEFAULT_FOLDERS
-    }
-  })
+  const [folders, setFolders] = useState(DEFAULT_FOLDERS)
+  const [initialFolders, setInitialFolders] = useState(DEFAULT_FOLDERS)
   const [newFolder, setNewFolder] = useState('')
   const pollRef = useRef(null)
 
-  function updateFolders(updated) {
+  async function updateFolders(updated) {
     setFolders(updated)
+    if (window.electron?.saveSettings) {
+      await window.electron.saveSettings({ folders: updated })
+    }
     localStorage.setItem('claire_folders', JSON.stringify(updated))
   }
 
@@ -323,7 +330,7 @@ function SettingsModal({ accounts, fetchAccounts, onClose }) {
         body: JSON.stringify({ folder: path }),
       })
     } catch {}
-    updateFolders(folders.filter((p) => p !== path))
+    await updateFolders(folders.filter((p) => p !== path))
   }
 
   function handleAddFolder() {
@@ -339,6 +346,22 @@ function SettingsModal({ accounts, fetchAccounts, onClose }) {
   }
 
   useEffect(() => {
+    async function init() {
+      let loaded = DEFAULT_FOLDERS
+      try {
+        if (window.electron?.getSettings) {
+          const settings = await window.electron.getSettings()
+          loaded = Array.isArray(settings.folders) ? settings.folders : DEFAULT_FOLDERS
+        } else {
+          const saved = localStorage.getItem('claire_folders')
+          loaded = saved ? JSON.parse(saved) : DEFAULT_FOLDERS
+          if (!Array.isArray(loaded)) loaded = DEFAULT_FOLDERS
+        }
+      } catch {}
+      setFolders(loaded)
+      setInitialFolders(loaded)
+    }
+    init()
     fetchBlacklist()
     return () => clearInterval(pollRef.current)
   }, [])
@@ -380,23 +403,32 @@ function SettingsModal({ accounts, fetchAccounts, onClose }) {
     setConnecting(accountName)
     try {
       const res = await fetch(`${API}/drive/login/start/${accountName}`)
+      if (!res.ok) {
+        let detail = 'Unknown error'
+        try { detail = (await res.json()).detail } catch (_) {}
+        alert(`Could not connect Google Drive:\n\n${detail}`)
+        setConnecting(null)
+        return
+      }
       const data = await res.json()
-      const popup = window.open(data.auth_url, '_blank')
+      // In Electron, open in system browser — window.open creates a blank Electron window
+      if (window.electron?.openExternal) {
+        await window.electron.openExternal(data.auth_url)
+      } else {
+        window.open(data.auth_url, '_blank')
+      }
       pollRef.current = setInterval(async () => {
-        // Fetch fresh accounts from backend
         const r = await fetch(`${API}/drive/accounts`).then(x => x.json()).catch(() => ({ accounts: [] }))
         const currentAccounts = r.accounts || []
         fetchAccounts()
-        // Stop if popup closed OR account successfully connected
-        const closed = !popup || popup.closed
-        const connected = currentAccounts.includes(accountName)
-        if (closed || connected) {
+        if (currentAccounts.includes(accountName)) {
           clearInterval(pollRef.current)
           await fetchAccounts()
           setConnecting(null)
         }
       }, 2000)
     } catch {
+      alert('Could not reach the backend. Quit and relaunch Claire, then try again.')
       setConnecting(null)
     }
   }

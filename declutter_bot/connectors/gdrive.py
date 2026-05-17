@@ -90,7 +90,9 @@ class GoogleDriveConnector(SourceConnector):
             code_challenge=None,
             code_challenge_method=None,
         )
-        return auth_url
+        # requests-oauthlib encodes scope spaces as '+'; replace with %20 so
+        # macOS shell.openExternal → Safari doesn't treat them as literal '+'
+        return auth_url.replace("+", "%20")
 
     @classmethod
     def exchange_code(cls, account_name: str, code: str, redirect_uri: str) -> "GoogleDriveConnector":

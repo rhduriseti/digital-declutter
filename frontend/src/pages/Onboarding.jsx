@@ -70,22 +70,31 @@ export default function Onboarding() {
     setConnecting(accountName)
     try {
       const res = await fetch(`${API}/drive/login/start/${accountName}`)
+      if (!res.ok) {
+        let detail = 'Unknown error'
+        try { detail = (await res.json()).detail } catch (_) {}
+        alert(`Could not connect Google Drive:\n\n${detail}`)
+        setConnecting(null)
+        return
+      }
       const data = await res.json()
-      const popup = window.open(data.auth_url, '_blank')
+      if (window.electron?.openExternal) {
+        await window.electron.openExternal(data.auth_url)
+      } else {
+        window.open(data.auth_url, '_blank')
+      }
       pollRef.current = setInterval(async () => {
         const r = await fetch(`${API}/drive/accounts`).then(x => x.json()).catch(() => ({ accounts: [] }))
         const currentAccounts = r.accounts || []
         fetchAccounts()
-        const closed = !popup || popup.closed
-        const connected = currentAccounts.includes(accountName)
-        if (closed || connected) {
+        if (currentAccounts.includes(accountName)) {
           clearInterval(pollRef.current)
           await fetchAccounts()
           setConnecting(null)
         }
       }, 2000)
     } catch {
-      alert('Could not reach the backend. Make sure the API is running (declutter-api).')
+      alert('Could not reach the backend. Quit and relaunch Claire, then try again.')
       setConnecting(null)
     }
   }

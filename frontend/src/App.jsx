@@ -43,7 +43,19 @@ function AppRouter() {
 
         setIsFirstTime(!hasFolders && !hasDrives)
       } catch {
-        setIsFirstTime(true)
+        // Backend unreachable — fall back to local settings before showing onboarding
+        let hasFolders = false
+        try {
+          if (window.electron?.getSettings) {
+            const settings = await window.electron.getSettings()
+            hasFolders = Array.isArray(settings.folders) && settings.folders.length > 0
+          } else {
+            const saved = localStorage.getItem('claire_folders')
+            const folders = saved ? JSON.parse(saved) : []
+            hasFolders = Array.isArray(folders) && folders.length > 0
+          }
+        } catch {}
+        setIsFirstTime(!hasFolders)
       } finally {
         setReady(true)
       }

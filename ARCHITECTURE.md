@@ -453,6 +453,28 @@ The React UI (`frontend/src/pages/OrganisedFiles.jsx`) shows files grouped by su
 
 ---
 
+### Secrets Management (Production Roadmap)
+
+Currently Claire bundles `credentials_web.json` (Google OAuth client) and `GOOGLE_API_KEY` into the installer or reads them from `~/.declutter/settings.json`. This works for personal/family use but does not scale to a real product.
+
+**Three production patterns — in order of maturity:**
+
+**Pattern 1 — User brings their own key**
+User enters their Google AI API key during onboarding; stored in `~/.declutter/settings.json`. Works for technical users. Too much friction for students and families.
+
+**Pattern 2 — Local-only, no key required (near-term)**
+Use only Ollama/Gemma 3 for all classification; skip Gemma 4 Vision in the packaged app. No external API dependency, no secret to manage. Preserves the privacy story completely. Gemma 4 Vision becomes a premium opt-in that requires a key.
+
+**Pattern 3 — Your backend proxies all AI calls (production SaaS)**
+`Claire app → your server → Google AI API`. You hold the key; users never see it. Users authenticate to your service (email/password or Google SSO). You charge a subscription, pay Google per call, set per-user quotas. This is the right model for Tier 2/3 where Claire becomes a paid product.
+
+**Recommended path:**
+- **Now (family DMG):** bundle `credentials_web.json` in `extraResources`; API key read from `~/.declutter/settings.json`; restrict key in Google Cloud Console to `localhost` origin + daily quota cap to limit abuse
+- **Tier 2 (early product):** Pattern 2 — local-only free tier; Pattern 1 opt-in for Vision power users
+- **Tier 3 (school SaaS):** Pattern 3 — thin Electron client talks to your FastAPI backend; secrets never leave your server
+
+---
+
 ## 14. Build Order
 
 **Phase 1 — Tier 1 (complete)**

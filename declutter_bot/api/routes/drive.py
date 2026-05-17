@@ -29,6 +29,14 @@ def login_start(account_name: str):
         return {"auth_url": auth_url, "account_name": account_name}
     except FileNotFoundError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    except (json.JSONDecodeError, ValueError):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "credentials_web.json at ~/.declutter/ is empty or not valid JSON. "
+                "Re-run family_setup.sh with your real Google OAuth credentials."
+            ),
+        )
 
 
 @router.get("/login/callback")

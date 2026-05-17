@@ -30,29 +30,33 @@ export default function ReadyToScan() {
       }
     }
 
-    const jobs = []
+    try {
+      const jobs = []
 
-    for (const folder of folders) {
-      const res = await apiFetch(`${API}/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ folder, source: 'local' }),
-      })
-      const data = await res.json()
-      jobs.push({ jobId: data.job_id, label: folder })
+      for (const folder of folders) {
+        const res = await apiFetch(`${API}/scan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ folder, source: 'local' }),
+        })
+        const data = await res.json()
+        jobs.push({ jobId: data.job_id, label: folder })
+      }
+
+      for (const account of connectedAccounts) {
+        const res = await apiFetch(`${API}/scan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: `gdrive:${account}` }),
+        })
+        const data = await res.json()
+        jobs.push({ jobId: data.job_id, label: `${account} Drive` })
+      }
+
+      navigate('/scanning', { state: { jobs, folders } })
+    } catch (err) {
+      alert('Could not start scan. The Claire backend may still be starting up — wait a few seconds and try again.\n\nIf this keeps happening, quit Claire and relaunch it.')
     }
-
-    for (const account of connectedAccounts) {
-      const res = await apiFetch(`${API}/scan`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: `gdrive:${account}` }),
-      })
-      const data = await res.json()
-      jobs.push({ jobId: data.job_id, label: `${account} Drive` })
-    }
-
-    navigate('/scanning', { state: { jobs, folders } })
   }
 
   return (

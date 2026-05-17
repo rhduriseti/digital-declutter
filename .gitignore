@@ -16,3 +16,4 @@ installer/dist/
 frontend/dist-electron/
 .vscode/
 .claude/settings.local.json
+installer/family_setup.sh

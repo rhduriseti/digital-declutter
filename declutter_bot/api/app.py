@@ -32,5 +32,16 @@ def root():
 
 
 def main():
+    import sys
     import uvicorn
-    uvicorn.run("declutter_bot.api.app:app", host="127.0.0.1", port=8000, reload=True)
+    frozen = getattr(sys, 'frozen', False)  # True when running as PyInstaller bundle
+    uvicorn.run(
+        app if frozen else "declutter_bot.api.app:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=not frozen,
+    )
+
+
+if __name__ == "__main__":
+    main()

@@ -22,6 +22,15 @@ function getLogPath() {
   return path.join(app.getPath('userData'), 'claire-api.log')
 }
 
+function readSettings() {
+  try {
+    const p = path.join(os.homedir(), '.declutter', 'settings.json')
+    return JSON.parse(fs.readFileSync(p, 'utf8'))
+  } catch (_) {
+    return {}
+  }
+}
+
 function startBackend() {
   const bin = getBackendBinaryPath()
 
@@ -33,9 +42,14 @@ function startBackend() {
   fs.mkdirSync(path.dirname(logPath), { recursive: true })
   const logFd = fs.openSync(logPath, 'a')
 
+  const settings = readSettings()
+  const env = { ...process.env }
+  if (settings.GOOGLE_API_KEY) env.GOOGLE_API_KEY = settings.GOOGLE_API_KEY
+
   backendProcess = spawn(bin, [], {
     shell: !app.isPackaged,
     stdio: ['ignore', logFd, logFd],
+    env,
     detached: false,
   })
 
@@ -49,7 +63,7 @@ function startBackend() {
 
 // Poll localhost:8000 until the backend is ready, then call onReady().
 // Gives up after maxAttempts and shows an error dialog.
-function waitForBackend(onReady, attempt = 0, maxAttempts = 30) {
+function waitForBackend(onReady, attempt = 0, maxAttempts = 80) {
   http.get('http://localhost:8000/', (res) => {
     if (res.statusCode === 200) {
       onReady()
@@ -65,11 +79,20 @@ function retryOrFail(onReady, attempt, maxAttempts) {
   if (attempt >= maxAttempts) {
     dialog.showErrorBox(
       'Claire — Startup Timeout',
-      `The Claire API did not start within 15 seconds.\n\nCheck the log for details:\n${getLogPath()}`
+      `The Claire API did not start within 40 seconds.\n\nCheck the log for details:\n${getLogPath()}`
     )
     return
   }
   setTimeout(() => waitForBackend(onReady, attempt + 1, maxAttempts), 500)
+}
+
+// macOS Electron apps don't inherit the shell's full PATH.
+// Add common locations so ollama, brew-installed tools are findable.
+function shellEnv() {
+  return {
+    ...process.env,
+    PATH: `/usr/local/bin:/opt/homebrew/bin:${process.env.PATH || ''}`,
+  }
 }
 
 // Check available disk space on the home volume. Returns free bytes.
@@ -135,7 +158,7 @@ async function handleCurlResult(code, progressWin, tmpZip, extractDir, appsDir, 
     execSync(`unzip -o "${tmpZip}" -d "${extractDir}"`)
     fs.mkdirSync(appsDir, { recursive: true })
     execSync(`cp -R "${extractDir}/Ollama.app" "${appsDir}/"`)
-    spawn('open', [`${appsDir}/Ollama.app`], { detached: true, stdio: 'ignore' })
+    spawn('open', ['-j', '-g', `${appsDir}/Ollama.app`], { detached: true, stdio: 'ignore' })
   } catch (e) {
     if (!progressWin.isDestroyed()) progressWin.close()
     const { response } = await dialog.showMessageBox({
@@ -194,7 +217,7 @@ function installOllama() {
 
 function waitForOllamaCLI(onReady, attempt = 0, maxAttempts = 30) {
   try {
-    execSync('ollama --version', { stdio: 'ignore' })
+    execSync('ollama --version', { stdio: 'ignore', env: shellEnv() })
     onReady()
   } catch (_) {
     if (attempt >= maxAttempts) {
@@ -231,7 +254,7 @@ async function checkOllama() {
   // Step 1: is Ollama installed?
   let ollamaInstalled = false
   try {
-    execSync('ollama --version', { stdio: 'ignore' })
+    execSync('ollama --version', { stdio: 'ignore', env: shellEnv() })
     ollamaInstalled = true
   } catch (_) {}
 
@@ -258,7 +281,7 @@ async function checkOllama() {
   // Step 2: is gemma3:4b pulled?
   let modelReady = false
   try {
-    const list = execSync('ollama list', { encoding: 'utf8' })
+    const list = execSync('ollama list', { encoding: 'utf8', env: shellEnv() })
     modelReady = list.includes('gemma3:4b') || list.includes('gemma3')
   } catch (_) {}
 
@@ -291,7 +314,7 @@ function pullGemma() {
       'This runs once. Claire will use local AI for all future scans.'
     )
 
-    const pull = spawn('ollama', ['pull', 'gemma3:4b'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    const pull = spawn('ollama', ['pull', 'gemma3:4b'], { stdio: ['ignore', 'pipe', 'pipe'], env: shellEnv() })
 
     pull.stdout.on('data', (chunk) => {
       const line = chunk.toString().trim().split('\n').pop()
@@ -299,34 +322,18 @@ function pullGemma() {
     })
 
     pull.on('close', () => {
-      progressWin.close()
+      if (!progressWin.isDestroyed()) progressWin.close()
       resolve()
     })
     pull.on('error', () => {
-      progressWin.close()
+      if (!progressWin.isDestroyed()) progressWin.close()
       resolve()
     })
   })
 }
 
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    titleBarStyle: 'hiddenInset',
-    title: 'Claire',
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
-  })
-
-  if (DEV_SERVER_URL) {
-    mainWindow.loadURL(DEV_SERVER_URL)
-  } else {
-    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
-  }
+function registerIpcHandlers() {
+  const settingsPath = path.join(os.homedir(), '.declutter', 'settings.json')
 
   ipcMain.handle('dialog:openFolder', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -339,7 +346,9 @@ function createWindow() {
     await shell.openPath(filePath)
   })
 
-  const settingsPath = path.join(os.homedir(), '.declutter', 'settings.json')
+  ipcMain.handle('shell:openExternal', async (_event, url) => {
+    await shell.openExternal(url)
+  })
 
   ipcMain.handle('settings:get', () => {
     try {
@@ -373,7 +382,28 @@ function createWindow() {
   })
 }
 
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    titleBarStyle: 'hiddenInset',
+    title: 'Claire',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  if (DEV_SERVER_URL) {
+    mainWindow.loadURL(DEV_SERVER_URL)
+  } else {
+    mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+  }
+}
+
 app.whenReady().then(async () => {
+  registerIpcHandlers()
   startBackend()
   await checkOllama()
   waitForBackend(createWindow)
@@ -384,8 +414,10 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  if (backendProcess) backendProcess.kill()
-  if (process.platform !== 'darwin') app.quit()
+  if (process.platform !== 'darwin') {
+    if (backendProcess) backendProcess.kill()
+    app.quit()
+  }
 })
 
 app.on('before-quit', () => {
